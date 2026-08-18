@@ -95,6 +95,9 @@ const char *GetNativeAppAlgorithmResultName(
     case NATIVE_APP_ALGORITHM_RESULT_FAIL_XFRM:
         pcName = "FAIL_XFRM";
         break;
+    case NATIVE_APP_ALGORITHM_RESULT_FAIL_INSTALL:
+        pcName = "FAIL_INSTALL";
+        break;
     case NATIVE_APP_ALGORITHM_RESULT_FAIL_DATA_PATH:
         pcName = "FAIL_DATA_PATH";
         break;
@@ -103,6 +106,25 @@ const char *GetNativeAppAlgorithmResultName(
         break;
     default:
         pcName = "STOPPED";
+        break;
+    }
+    return pcName;
+}
+
+static const char *GetNativeAppAlgorithmDatapathName(
+    IpsecDatapathType_t eType)
+{
+    const char *pcName;
+
+    switch (eType) {
+    case IPSEC_DATAPATH_KERNEL_XFRM:
+        pcName = "kernel-xfrm";
+        break;
+    case IPSEC_DATAPATH_KERNEL_LIBIPSEC:
+        pcName = "kernel-libipsec";
+        break;
+    default:
+        pcName = "unknown";
         break;
     }
     return pcName;
@@ -632,21 +654,46 @@ static IpsecError_t QueryNativeAppAlgorithmState(
     IpsecChildSaList_t ChildList = {0};
     IpsecXfrmStateList_t StateList = {0};
     IpsecXfrmPolicyList_t PolicyList = {0};
+    IpsecDatapathStatus_t DatapathStatus = {0};
     const IpsecIkeSaInfo_t *pIke = NULL;
     const IpsecChildSaInfo_t *pChild = NULL;
     uint32_t uiIndex;
     IpsecError_t eError;
 
-    pResult->eResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_XFRM;
-    eError = GetIpsecIkeSas(pContext, &IkeList);
+    pResult->eResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_INSTALL;
+    eError = GetIpsecDatapathStatus(pContext, &DatapathStatus);
+    if ((IPSEC_OK == eError) &&
+        (!DatapathStatus.bReady ||
+         (IPSEC_DATAPATH_UNKNOWN == DatapathStatus.eType))) {
+        eError = IPSEC_ERR_NOT_SUPPORTED;
+    }
+    else {
+        /* Preserve the datapath query error or continue when ready. */
+    }
+    if (IPSEC_OK == eError) {
+        pResult->eDatapathType = DatapathStatus.eType;
+        pResult->uiTunRouteCount = DatapathStatus.uiTunRouteCount;
+        eError = GetIpsecIkeSas(pContext, &IkeList);
+    }
+    else {
+        /* Preserve the datapath validation error. */
+    }
     if (IPSEC_OK == eError) {
         eError = GetIpsecChildSas(pContext, &ChildList);
     }
-    if (IPSEC_OK == eError) {
+    if ((IPSEC_OK == eError) &&
+        (IPSEC_DATAPATH_KERNEL_XFRM == DatapathStatus.eType)) {
         eError = GetIpsecXfrmStates(pContext, &StateList);
     }
-    if (IPSEC_OK == eError) {
+    else {
+        /* kernel-libipsec does not install XFRM states. */
+    }
+    if ((IPSEC_OK == eError) &&
+        (IPSEC_DATAPATH_KERNEL_XFRM == DatapathStatus.eType)) {
         eError = GetIpsecXfrmPolicies(pContext, &PolicyList);
+    }
+    else {
+        /* kernel-libipsec does not install XFRM policies. */
     }
     if (IPSEC_OK == eError) {
         for (uiIndex = 0U; uiIndex < IkeList.uiCount; uiIndex++) {
@@ -731,7 +778,8 @@ static IpsecError_t QueryNativeAppAlgorithmState(
     else {
         /* Preserve the ESP negotiation failure stage. */
     }
-    if (IPSEC_OK == eError) {
+    if ((IPSEC_OK == eError) &&
+        (IPSEC_DATAPATH_KERNEL_XFRM == DatapathStatus.eType)) {
         for (uiIndex = 0U; uiIndex < StateList.uiCount; uiIndex++) {
             if (pResult->uiReqid == StateList.pItems[uiIndex].uiReqid) {
                 pResult->uiXfrmStateCount++;
@@ -749,8 +797,22 @@ static IpsecError_t QueryNativeAppAlgorithmState(
             eError = IPSEC_ERR_INTERNAL;
         }
         else {
-            pResult->bXfrmVerified = true;
+            pResult->bInstallVerified = true;
         }
+    }
+    else if ((IPSEC_OK == eError) &&
+             (IPSEC_DATAPATH_KERNEL_LIBIPSEC == DatapathStatus.eType)) {
+        if ((0U == pResult->uiReqid) ||
+            (0U == DatapathStatus.uiTunRouteCount)) {
+            pResult->eResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_INSTALL;
+            eError = IPSEC_ERR_INTERNAL;
+        }
+        else {
+            pResult->bInstallVerified = true;
+        }
+    }
+    else {
+        /* Preserve the negotiation or installation error. */
     }
     FreeIpsecXfrmPolicyList(&PolicyList);
     FreeIpsecXfrmStateList(&StateList);
@@ -768,35 +830,49 @@ static void ReportNativeAppAlgorithmFinalState(
     IpsecChildSaList_t ChildList = {0};
     IpsecXfrmStateList_t StateList = {0};
     IpsecXfrmPolicyList_t PolicyList = {0};
+    IpsecDatapathStatus_t DatapathStatus = {0};
     IpsecError_t eConnection;
     IpsecError_t eIke;
     IpsecError_t eChild;
+    IpsecError_t eDatapath;
     IpsecError_t eState;
     IpsecError_t ePolicy;
 
     eConnection = GetIpsecConnections(pContext, &ConnectionList);
     eIke = GetIpsecIkeSas(pContext, &IkeList);
     eChild = GetIpsecChildSas(pContext, &ChildList);
-    eState = GetIpsecXfrmStates(pContext, &StateList);
-    ePolicy = GetIpsecXfrmPolicies(pContext, &PolicyList);
+    eDatapath = GetIpsecDatapathStatus(pContext, &DatapathStatus);
+    if ((IPSEC_OK == eDatapath) &&
+        (IPSEC_DATAPATH_KERNEL_LIBIPSEC == DatapathStatus.eType)) {
+        eState = IPSEC_OK;
+        ePolicy = IPSEC_OK;
+    }
+    else {
+        eState = GetIpsecXfrmStates(pContext, &StateList);
+        ePolicy = GetIpsecXfrmPolicies(pContext, &PolicyList);
+    }
     if ((IPSEC_OK == eConnection) && (IPSEC_OK == eIke) &&
-        (IPSEC_OK == eChild) && (IPSEC_OK == eState) &&
+        (IPSEC_OK == eChild) && (IPSEC_OK == eDatapath) &&
+        (IPSEC_OK == eState) &&
         (IPSEC_OK == ePolicy)) {
         ReportNativeAppAlgorithm(
             pLog, stdout, "INFO",
             "final state: connections=%" PRIu32 " ike=%" PRIu32
-            " child=%" PRIu32 " xfrm_states=%" PRIu32
-            " xfrm_policies=%" PRIu32,
+            " child=%" PRIu32 " datapath=%s xfrm_states=%" PRIu32
+            " xfrm_policies=%" PRIu32 " tun_routes=%" PRIu32,
             ConnectionList.uiCount, IkeList.uiCount, ChildList.uiCount,
-            StateList.uiCount, PolicyList.uiCount);
+            GetNativeAppAlgorithmDatapathName(DatapathStatus.eType),
+            StateList.uiCount, PolicyList.uiCount,
+            DatapathStatus.uiTunRouteCount);
     }
     else {
         ReportNativeAppAlgorithm(
             pLog, stderr, "WARN",
             "final state query: connections=%s ike=%s child=%s"
-            " xfrm_states=%s xfrm_policies=%s",
+            " datapath=%s xfrm_states=%s xfrm_policies=%s",
             GetIpsecErrorString(eConnection), GetIpsecErrorString(eIke),
-            GetIpsecErrorString(eChild), GetIpsecErrorString(eState),
+            GetIpsecErrorString(eChild), GetIpsecErrorString(eDatapath),
+            GetIpsecErrorString(eState),
             GetIpsecErrorString(ePolicy));
     }
     FreeIpsecXfrmPolicyList(&PolicyList);
@@ -1037,7 +1113,7 @@ static IpsecError_t OpenNativeAppAlgorithmJson(
     if (NULL == pWriter->pFile) {
         return IPSEC_ERR_FILE_OPEN;
     }
-    (void)fputs("{\n  \"schema_version\": 4,\n  \"run_id\": ",
+    (void)fputs("{\n  \"schema_version\": 5,\n  \"run_id\": ",
                 pWriter->pFile);
     WriteNativeAppJsonString(pWriter->pFile, pcRunId);
     (void)fputs(",\n  \"mode\": ", pWriter->pFile);
@@ -1085,10 +1161,14 @@ static IpsecError_t AppendNativeAppAlgorithmJson(
                   ", \"reqid\": %" PRIu32
                   ", \"xfrm_states\": %" PRIu32
                   ", \"xfrm_policies\": %" PRIu32
-                  ", \"duration_ms\": %" PRIu64
-                  ", \"result\": ",
+                  ", \"tun_routes\": %" PRIu32
+                  ", \"datapath\": ",
                   pResult->uiReqid, pResult->uiXfrmStateCount,
-                  pResult->uiXfrmPolicyCount, pResult->ullDurationMs);
+                  pResult->uiXfrmPolicyCount, pResult->uiTunRouteCount);
+    WriteNativeAppJsonString(
+        pFile, GetNativeAppAlgorithmDatapathName(pResult->eDatapathType));
+    (void)fprintf(pFile, ", \"duration_ms\": %" PRIu64
+                  ", \"result\": ", pResult->ullDurationMs);
     WriteNativeAppJsonString(pFile,
                              GetNativeAppAlgorithmResultName(pResult->eResult));
     (void)fputs(", \"error\": ", pFile);
@@ -1132,10 +1212,10 @@ static IpsecError_t AppendNativeAppAlgorithmJson(
         pResult->Cleanup.bLocalVerified ? "true" : "false");
     (void)fprintf(pFile,
         ", \"ike_result\": \"%s\", \"esp_result\": \"%s\", "
-        "\"xfrm_result\": \"%s\", \"data_path_result\": \"%s\"",
+        "\"install_result\": \"%s\", \"data_path_result\": \"%s\"",
         pResult->bIkeVerified ? "PASS" : "FAIL",
         pResult->bEspVerified ? "PASS" : "FAIL",
-        pResult->bXfrmVerified ? "PASS" : "FAIL",
+        pResult->bInstallVerified ? "PASS" : "FAIL",
         pResult->bDataPathVerified ? "PASS" : "FAIL");
     (void)fputs(", \"peer_result\": ", pFile);
     WriteNativeAppJsonString(pFile, pResult->acPeerResult);
@@ -1435,7 +1515,7 @@ static IpsecError_t RunNativeAppAlgorithmCaseClient(
 
         if ((IPSEC_OK != eReport) && (IPSEC_OK == eError)) {
             eError = eReport;
-            pResult->eResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_XFRM;
+            pResult->eResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_INSTALL;
         }
     }
     if (IPSEC_OK == eError) {
@@ -1631,12 +1711,12 @@ IpsecError_t RunNativeAppAlgorithmClient(
         ReportNativeAppAlgorithm(
             pLog, stdout,
             (Result.bIkeVerified && Result.bEspVerified &&
-             Result.bXfrmVerified && Result.bDataPathVerified) ?
+             Result.bInstallVerified && Result.bDataPathVerified) ?
             "PASS" : "FAIL",
-            "phases case=%s IKE=%s ESP=%s XFRM=%s DATA_PATH=%s",
+            "phases case=%s IKE=%s ESP=%s INSTALL=%s DATA_PATH=%s",
             Result.Case.acId, Result.bIkeVerified ? "PASS" : "FAIL",
             Result.bEspVerified ? "PASS" : "FAIL",
-            Result.bXfrmVerified ? "PASS" : "FAIL",
+            Result.bInstallVerified ? "PASS" : "FAIL",
             Result.bDataPathVerified ? "PASS" : "FAIL");
         ReportNativeAppAlgorithm(
             pLog, stdout,

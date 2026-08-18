@@ -205,6 +205,7 @@ static IpsecError_t VerifyNativeAppInstalled(
     IpsecChildSaList_t ChildList = {0};
     IpsecXfrmStateList_t StateList = {0};
     IpsecXfrmPolicyList_t PolicyList = {0};
+    IpsecDatapathStatus_t DatapathStatus = {0};
     IpsecError_t eError;
     uint32_t uiIndex;
     uint32_t uiReqid = 0U;
@@ -213,24 +214,45 @@ static IpsecError_t VerifyNativeAppInstalled(
     bool bIkeFound = false;
     bool bChildFound = false;
 
-    eError = GetIpsecIkeSas(pContext, &IkeList);
+    eError = GetIpsecDatapathStatus(pContext, &DatapathStatus);
+    if ((IPSEC_OK == eError) && !DatapathStatus.bReady) {
+        eError = IPSEC_ERR_INTERNAL;
+    }
+    else {
+        /* Continue with a ready datapath or preserve the query error. */
+    }
+    if ((IPSEC_OK == eError) &&
+        (IPSEC_DATAPATH_UNKNOWN == DatapathStatus.eType)) {
+        eError = IPSEC_ERR_NOT_SUPPORTED;
+    }
+    else {
+        /* The active datapath has a supported verification strategy. */
+    }
+    if (IPSEC_OK == eError) {
+        eError = GetIpsecIkeSas(pContext, &IkeList);
+    }
+    else {
+        /* Preserve the datapath validation error. */
+    }
     if (IPSEC_OK == eError) {
         eError = GetIpsecChildSas(pContext, &ChildList);
     }
     else {
         /* Preserve the IKE query error. */
     }
-    if (IPSEC_OK == eError) {
+    if ((IPSEC_OK == eError) &&
+        (IPSEC_DATAPATH_KERNEL_XFRM == DatapathStatus.eType)) {
         eError = GetIpsecXfrmStates(pContext, &StateList);
     }
     else {
-        /* Preserve the CHILD query error. */
+        /* kernel-libipsec does not install XFRM states. */
     }
-    if (IPSEC_OK == eError) {
+    if ((IPSEC_OK == eError) &&
+        (IPSEC_DATAPATH_KERNEL_XFRM == DatapathStatus.eType)) {
         eError = GetIpsecXfrmPolicies(pContext, &PolicyList);
     }
     else {
-        /* Preserve the XFRM state query error. */
+        /* kernel-libipsec does not install XFRM policies. */
     }
     if (IPSEC_OK == eError) {
         for (uiIndex = 0U; uiIndex < IkeList.uiCount; uiIndex++) {
@@ -275,15 +297,32 @@ static IpsecError_t VerifyNativeAppInstalled(
                 /* The policy belongs to another CHILD SA. */
             }
         }
-        if (!bIkeFound || !bChildFound || (0U == uiStateCount) ||
-            (0U == uiPolicyCount)) {
+        if (!bIkeFound || !bChildFound) {
+            eError = IPSEC_ERR_INTERNAL;
+        }
+        else if ((IPSEC_DATAPATH_KERNEL_XFRM == DatapathStatus.eType) &&
+                 ((0U == uiStateCount) || (0U == uiPolicyCount))) {
+            eError = IPSEC_ERR_INTERNAL;
+        }
+        else if ((IPSEC_DATAPATH_KERNEL_LIBIPSEC == DatapathStatus.eType) &&
+                 (0U == DatapathStatus.uiTunRouteCount)) {
             eError = IPSEC_ERR_INTERNAL;
         }
         else {
             *puiReqid = uiReqid;
-            (void)printf("verified reqid=%" PRIu32
-                         " xfrm_states=%" PRIu32 " xfrm_policies=%" PRIu32
-                         "\n", uiReqid, uiStateCount, uiPolicyCount);
+            if (IPSEC_DATAPATH_KERNEL_XFRM == DatapathStatus.eType) {
+                (void)printf(
+                    "verified datapath=kernel-xfrm reqid=%" PRIu32
+                    " xfrm_states=%" PRIu32 " xfrm_policies=%" PRIu32
+                    "\n", uiReqid, uiStateCount, uiPolicyCount);
+            }
+            else {
+                (void)printf(
+                    "verified datapath=kernel-libipsec reqid=%" PRIu32
+                    " tun=%s routes=%" PRIu32 "\n",
+                    uiReqid, DatapathStatus.acTunInterfaceName,
+                    DatapathStatus.uiTunRouteCount);
+            }
         }
     }
     else {
@@ -302,10 +341,22 @@ IpsecError_t WaitNativeAppRemovedWithTimeout(
     uint32_t uiReqid,
     uint32_t uiTimeoutMs)
 {
+    IpsecDatapathStatus_t DatapathStatus = {0};
     uint32_t uiElapsed = 0U;
+    IpsecError_t eDatapathError;
 
     if ((NULL == pContext) || (NULL == pConfig)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    eDatapathError = GetIpsecDatapathStatus(pContext, &DatapathStatus);
+    if (IPSEC_OK != eDatapathError) {
+        return eDatapathError;
+    }
+    else if (IPSEC_DATAPATH_UNKNOWN == DatapathStatus.eType) {
+        return IPSEC_ERR_NOT_SUPPORTED;
+    }
+    else {
+        /* Poll resources supported by the detected datapath. */
     }
     while ((uiElapsed <= uiTimeoutMs) &&
            (0 == gbNativeAppStopRequested)) {
@@ -324,17 +375,19 @@ IpsecError_t WaitNativeAppRemovedWithTimeout(
         else {
             /* Preserve the IKE query error. */
         }
-        if (IPSEC_OK == eError) {
+        if ((IPSEC_OK == eError) &&
+            (IPSEC_DATAPATH_KERNEL_XFRM == DatapathStatus.eType)) {
             eError = GetIpsecXfrmStates(pContext, &StateList);
         }
         else {
-            /* Preserve the CHILD query error. */
+            /* kernel-libipsec has no XFRM states to remove. */
         }
-        if (IPSEC_OK == eError) {
+        if ((IPSEC_OK == eError) &&
+            (IPSEC_DATAPATH_KERNEL_XFRM == DatapathStatus.eType)) {
             eError = GetIpsecXfrmPolicies(pContext, &PolicyList);
         }
         else {
-            /* Preserve the XFRM state query error. */
+            /* kernel-libipsec has no XFRM policies to remove. */
         }
         if (IPSEC_OK == eError) {
             for (uiIndex = 0U; uiIndex < IkeList.uiCount; uiIndex++) {
@@ -347,15 +400,20 @@ IpsecError_t WaitNativeAppRemovedWithTimeout(
                     (0 == strcmp(pConfig->acChildName,
                                  ChildList.pItems[uiIndex].acName));
             }
-            for (uiIndex = 0U; uiIndex < StateList.uiCount; uiIndex++) {
-                bPresent = bPresent ||
-                    ((0U != uiReqid) &&
-                     (uiReqid == StateList.pItems[uiIndex].uiReqid));
+            if (IPSEC_DATAPATH_KERNEL_XFRM == DatapathStatus.eType) {
+                for (uiIndex = 0U; uiIndex < StateList.uiCount; uiIndex++) {
+                    bPresent = bPresent ||
+                        ((0U != uiReqid) &&
+                         (uiReqid == StateList.pItems[uiIndex].uiReqid));
+                }
+                for (uiIndex = 0U; uiIndex < PolicyList.uiCount; uiIndex++) {
+                    bPresent = bPresent ||
+                        ((0U != uiReqid) &&
+                         (uiReqid == PolicyList.pItems[uiIndex].uiReqid));
+                }
             }
-            for (uiIndex = 0U; uiIndex < PolicyList.uiCount; uiIndex++) {
-                bPresent = bPresent ||
-                    ((0U != uiReqid) &&
-                     (uiReqid == PolicyList.pItems[uiIndex].uiReqid));
+            else {
+                /* IKE and CHILD removal completes kernel-libipsec cleanup. */
             }
         }
         else {

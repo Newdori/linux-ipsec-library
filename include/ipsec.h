@@ -107,6 +107,10 @@ IpsecError_t GetIpsecDaemonStatus(
     IpsecContext_t *pContext,
     IpsecDaemonStatus_t *pStatus);
 
+IpsecError_t GetIpsecDatapathStatus(
+    IpsecContext_t *pContext,
+    IpsecDatapathStatus_t *pStatus);
+
 IpsecError_t GetIpsecXfrmStates(
     IpsecContext_t *pContext,
     IpsecXfrmStateList_t *pList);

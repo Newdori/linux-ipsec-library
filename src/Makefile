@@ -10,7 +10,8 @@ ZYNQMP_AR ?= aarch64-linux-gnu-ar
 ZYNQMP_RANLIB ?= aarch64-linux-gnu-ranlib
 
 COMMON_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror -fPIC -O2
-COMMON_CPPFLAGS := -I../include -Iinternal -Iike/vici -Idatapath/xfrm -Inetwork
+COMMON_CPPFLAGS := -I../include -Iinternal -Iike/vici -Idatapath/common \
+	-Idatapath/kernel_libipsec -Idatapath/xfrm -Inetwork
 COMMON_LDLIBS := -pthread
 
 SOURCES := \
@@ -32,6 +33,8 @@ SOURCES := \
 	ike/vici/vici_sa.c \
 	ike/vici/vici_stats.c \
 	ike/vici/vici_transport.c \
+	datapath/common/datapath.c \
+	datapath/kernel_libipsec/kernel_libipsec_status.c \
 	datapath/xfrm/xfrm_policy.c \
 	datapath/xfrm/xfrm_state.c \
 	datapath/xfrm/xfrm_stats.c \

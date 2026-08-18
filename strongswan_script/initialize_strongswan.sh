@@ -10,6 +10,10 @@ VICI_SOCKET=${VICI_SOCKET:-/run/charon.vici}
 SERVICE_NAME=${SERVICE_NAME:-}
 DRY_RUN=${DRY_RUN:-0}
 REQUIRE_PLUGIN_FILES=${REQUIRE_PLUGIN_FILES:-1}
+DATAPATH_BACKEND=${DATAPATH_BACKEND:-kernel-xfrm}
+KERNEL_LIBIPSEC_RAW_ESP=${KERNEL_LIBIPSEC_RAW_ESP:-0}
+KERNEL_LIBIPSEC_ALLOW_PEER_TS=${KERNEL_LIBIPSEC_ALLOW_PEER_TS:-1}
+ADJUST_RP_FILTER=${ADJUST_RP_FILTER:-0}
 STRONGSWAN_PLUGIN_DIRS=${STRONGSWAN_PLUGIN_DIRS:-/usr/lib/ipsec/plugins:/usr/lib64/ipsec/plugins:/usr/lib/strongswan/plugins:/usr/lib64/strongswan/plugins:/lib/ipsec/plugins:/lib64/ipsec/plugins:/usr/local/lib/ipsec/plugins}
 
 MANAGED_BEGIN='# BEGIN libipsec managed plugins'
@@ -50,7 +54,7 @@ RequireRoot()
 
 RequireCommands()
 {
-    for pcCommandName in grep id cp mkdir chmod mv rm sleep
+    for pcCommandName in awk grep id cp mkdir chmod mv rm sleep
     do
         if command -v "${pcCommandName}" >/dev/null 2>&1; then
             :
@@ -86,6 +90,7 @@ CheckPluginFiles()
 {
     pcViciPlugin=$(FindPluginFile vici || true)
     pcKernelNetlinkPlugin=$(FindPluginFile kernel-netlink || true)
+    pcKernelLibipsecPlugin=$(FindPluginFile kernel-libipsec || true)
 
     if [ -z "${pcViciPlugin}" ]; then
         if [ "${REQUIRE_PLUGIN_FILES}" = "1" ]; then
@@ -110,6 +115,38 @@ CheckPluginFiles()
     else
         LogInfo "Found kernel-netlink plugin: ${pcKernelNetlinkPlugin}"
     fi
+
+    if [ "${DATAPATH_BACKEND}" = "kernel-libipsec" ]; then
+        if [ -z "${pcKernelLibipsecPlugin}" ]; then
+            if [ "${REQUIRE_PLUGIN_FILES}" = "1" ]; then
+                LogError 'The installed strongSwan build does not contain the kernel-libipsec plugin file.'
+                exit 1
+            else
+                LogInfo 'kernel-libipsec plugin file not found; accepting a monolithic strongSwan build.'
+            fi
+        else
+            LogInfo "Found kernel-libipsec plugin: ${pcKernelLibipsecPlugin}"
+        fi
+    else
+        :
+    fi
+}
+
+WriteKernelLibipsecSettings()
+{
+    printf '\n'
+    printf 'socket-default {\n'
+    printf '    load = yes\n'
+    printf '    fwmark = 0x42\n'
+    printf '}\n'
+    printf '\n'
+    printf 'kernel-libipsec {\n'
+    printf '    load = yes\n'
+    printf '    allow_peer_ts = %s\n' \
+        "$([ "${KERNEL_LIBIPSEC_ALLOW_PEER_TS}" = "1" ] && printf yes || printf no)"
+    printf '    raw_esp = %s\n' \
+        "$([ "${KERNEL_LIBIPSEC_RAW_ESP}" = "1" ] && printf yes || printf no)"
+    printf '}\n'
 }
 
 CreateBackup()
@@ -159,7 +196,21 @@ WriteModularConfiguration()
         printf '\n'
         printf 'kernel-netlink {\n'
         printf '    load = yes\n'
+        if [ "${DATAPATH_BACKEND}" = "kernel-libipsec" ] && \
+            [ "${KERNEL_LIBIPSEC_ALLOW_PEER_TS}" = "1" ]; then
+            printf '    fwmark = !0x42\n'
+        else
+            :
+        fi
         printf '}\n'
+        if [ "${DATAPATH_BACKEND}" = "kernel-libipsec" ]; then
+            WriteKernelLibipsecSettings
+        else
+            printf '\n'
+            printf 'kernel-libipsec {\n'
+            printf '    load = no\n'
+            printf '}\n'
+        fi
     } > "${pcTemporaryConfiguration}"
 
     chmod 0644 "${pcTemporaryConfiguration}"
@@ -178,19 +229,21 @@ WriteMainConfiguration()
 
     CreateBackup "${STRONGSWAN_CONF}"
 
-    if grep -Fq "${MANAGED_BEGIN}" "${STRONGSWAN_CONF}"; then
-        LogInfo "Managed plugin block already exists: ${STRONGSWAN_CONF}"
+    if [ "${DRY_RUN}" = "1" ]; then
+        LogInfo "Would replace the managed plugin block in: ${STRONGSWAN_CONF}"
         return 0
     else
         :
     fi
 
-    if [ "${DRY_RUN}" = "1" ]; then
-        LogInfo "Would append the managed plugin block to: ${STRONGSWAN_CONF}"
-        return 0
-    else
-        :
-    fi
+    pcTemporaryConfiguration="${STRONGSWAN_CONF}.tmp.$$"
+    trap 'rm -f "${pcTemporaryConfiguration:-}"' EXIT HUP INT TERM
+    awk -v pcManagedBegin="${MANAGED_BEGIN}" \
+        -v pcManagedEnd="${MANAGED_END}" '
+        $0 == pcManagedBegin { bSkip = 1; next }
+        $0 == pcManagedEnd { bSkip = 0; next }
+        !bSkip { print }
+    ' "${STRONGSWAN_CONF}" > "${pcTemporaryConfiguration}"
 
     {
         printf '\n%s\n' "${MANAGED_BEGIN}"
@@ -202,11 +255,80 @@ WriteMainConfiguration()
         printf '        }\n'
         printf '        kernel-netlink {\n'
         printf '            load = yes\n'
+        if [ "${DATAPATH_BACKEND}" = "kernel-libipsec" ] && \
+            [ "${KERNEL_LIBIPSEC_ALLOW_PEER_TS}" = "1" ]; then
+            printf '            fwmark = !0x42\n'
+        else
+            :
+        fi
         printf '        }\n'
+        if [ "${DATAPATH_BACKEND}" = "kernel-libipsec" ]; then
+            printf '        socket-default {\n'
+            printf '            load = yes\n'
+            printf '            fwmark = 0x42\n'
+            printf '        }\n'
+            printf '        kernel-libipsec {\n'
+            printf '            load = yes\n'
+            printf '            allow_peer_ts = %s\n' \
+                "$([ "${KERNEL_LIBIPSEC_ALLOW_PEER_TS}" = "1" ] && printf yes || printf no)"
+            printf '            raw_esp = %s\n' \
+                "$([ "${KERNEL_LIBIPSEC_RAW_ESP}" = "1" ] && printf yes || printf no)"
+            printf '        }\n'
+        else
+            printf '        kernel-libipsec {\n'
+            printf '            load = no\n'
+            printf '        }\n'
+        fi
         printf '    }\n'
         printf '}\n'
         printf '%s\n' "${MANAGED_END}"
-    } >> "${STRONGSWAN_CONF}"
+    } >> "${pcTemporaryConfiguration}"
+
+    chmod 0644 "${pcTemporaryConfiguration}"
+    mv "${pcTemporaryConfiguration}" "${STRONGSWAN_CONF}"
+    trap - EXIT HUP INT TERM
+}
+
+AdjustKernelLibipsecHostSettings()
+{
+    if [ "${DATAPATH_BACKEND}" != "kernel-libipsec" ] || \
+        [ "${ADJUST_RP_FILTER}" != "1" ]; then
+        return 0
+    else
+        :
+    fi
+    if command -v sysctl >/dev/null 2>&1; then
+        RunCommand sysctl -w net.ipv4.conf.all.rp_filter=2
+    else
+        LogError 'sysctl is required when ADJUST_RP_FILTER=1.'
+        exit 1
+    fi
+}
+
+ValidateDatapathOptions()
+{
+    case "${DATAPATH_BACKEND}" in
+        kernel-xfrm|kernel-libipsec)
+            ;;
+        *)
+            LogError "Unsupported datapath backend: ${DATAPATH_BACKEND}"
+            exit 2
+            ;;
+    esac
+    for pcBooleanValue in \
+        "${KERNEL_LIBIPSEC_RAW_ESP}" \
+        "${KERNEL_LIBIPSEC_ALLOW_PEER_TS}" \
+        "${ADJUST_RP_FILTER}"
+    do
+        case "${pcBooleanValue}" in
+            0|1)
+                ;;
+            *)
+                LogError 'Boolean datapath options must be 0 or 1.'
+                exit 2
+                ;;
+        esac
+    done
 }
 
 ConfigurePlugins()
@@ -366,6 +488,38 @@ WaitForViciSocket()
     exit 1
 }
 
+WaitForDatapath()
+{
+    if [ "${DATAPATH_BACKEND}" != "kernel-libipsec" ]; then
+        LogInfo 'Kernel XFRM datapath selected.'
+        return 0
+    else
+        :
+    fi
+    if [ "${DRY_RUN}" = "1" ]; then
+        LogInfo 'Would wait for the kernel-libipsec TUN device: ipsec0'
+        return 0
+    else
+        :
+    fi
+
+    iAttempt=0
+    while [ "${iAttempt}" -lt 20 ]
+    do
+        if [ -d /sys/class/net/ipsec0 ]; then
+            LogInfo 'kernel-libipsec TUN device is ready: ipsec0'
+            return 0
+        else
+            sleep 1
+            iAttempt=$((iAttempt + 1))
+        fi
+    done
+
+    LogError 'kernel-libipsec was requested, but ipsec0 was not created.'
+    LogError 'Check the charon service log and kernel-libipsec plugin dependencies.'
+    exit 1
+}
+
 CheckCharonProcess()
 {
     if [ "${DRY_RUN}" = "1" ]; then
@@ -392,7 +546,8 @@ CheckCharonProcess()
 
 PrintUsage()
 {
-    printf 'Usage: %s [--dry-run]\n' "$0"
+    printf 'Usage: %s [--dry-run] [--datapath kernel-xfrm|kernel-libipsec]\n' "$0"
+    printf '          [--raw-esp] [--no-allow-peer-ts] [--adjust-rp-filter]\n'
     printf '\nEnvironment overrides:\n'
     printf '  STRONGSWAN_CONF  Main configuration path\n'
     printf '  STRONGSWAN_D_DIR Modular configuration directory\n'
@@ -400,6 +555,7 @@ PrintUsage()
     printf '  SERVICE_NAME     Custom systemd unit name\n'
     printf '  STRONGSWAN_PLUGIN_DIRS  Colon-separated plugin directories\n'
     printf '  REQUIRE_PLUGIN_FILES   Set to 0 for a monolithic build\n'
+    printf '  DATAPATH_BACKEND       kernel-xfrm or kernel-libipsec\n'
 }
 
 ParseArguments()
@@ -409,6 +565,24 @@ ParseArguments()
         case "$1" in
             --dry-run)
                 DRY_RUN=1
+                ;;
+            --datapath)
+                if [ "$#" -lt 2 ]; then
+                    LogError '--datapath requires a backend name.'
+                    exit 2
+                else
+                    DATAPATH_BACKEND=$2
+                    shift
+                fi
+                ;;
+            --raw-esp)
+                KERNEL_LIBIPSEC_RAW_ESP=1
+                ;;
+            --no-allow-peer-ts)
+                KERNEL_LIBIPSEC_ALLOW_PEER_TS=0
+                ;;
+            --adjust-rp-filter)
+                ADJUST_RP_FILTER=1
                 ;;
             -h|--help)
                 PrintUsage
@@ -427,14 +601,17 @@ ParseArguments()
 Main()
 {
     ParseArguments "$@"
+    ValidateDatapathOptions
     RequireCommands
     RequireRoot
     CheckPluginFiles
     ConfigurePlugins
+    AdjustKernelLibipsecHostSettings
     StartCharon
     CheckCharonProcess
     WaitForViciSocket
-    LogInfo 'strongSwan initialization completed.'
+    WaitForDatapath
+    LogInfo "strongSwan initialization completed: datapath=${DATAPATH_BACKEND}"
 }
 
 Main "$@"

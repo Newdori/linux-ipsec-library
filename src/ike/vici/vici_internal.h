@@ -163,4 +163,9 @@ IpsecError_t ParseViciCommandResult(
     uint32_t uiMessageLength,
     ViciCommandResult_t *pResult);
 
+IpsecError_t ParseViciDaemonStatusMessage(
+    const uint8_t *pucMessage,
+    uint32_t uiMessageLength,
+    IpsecDaemonStatus_t *pStatus);
+
 #endif

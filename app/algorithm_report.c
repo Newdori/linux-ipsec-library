@@ -89,6 +89,24 @@ static const char *GetReportMode(IpsecMode_t eMode)
     return pcMode;
 }
 
+static const char *GetReportDatapath(IpsecDatapathType_t eType)
+{
+    const char *pcDatapath;
+
+    switch (eType) {
+    case IPSEC_DATAPATH_KERNEL_XFRM:
+        pcDatapath = "kernel-xfrm";
+        break;
+    case IPSEC_DATAPATH_KERNEL_LIBIPSEC:
+        pcDatapath = "kernel-libipsec";
+        break;
+    default:
+        pcDatapath = "unknown";
+        break;
+    }
+    return pcDatapath;
+}
+
 static const char *GetReportFamily(IpsecAddressFamily_t eFamily)
 {
     return (IPSEC_ADDRESS_FAMILY_IPV6 == eFamily) ? "IPv6" : "IPv4";
@@ -194,12 +212,15 @@ static void SaveDaemonStatus(
                 "daemon=%s\nversion=%s\nsystem=%s\nrelease=%s\nmachine=%s\n"
                 "uptime_seconds=%" PRIu64 "\nworker_total=%" PRIu32
                 "\nworker_idle=%" PRIu32 "\nike_total=%" PRIu32
-                "\nike_half_open=%" PRIu32 "\n",
+                "\nike_half_open=%" PRIu32
+                "\nkernel_netlink=%s\nkernel_libipsec=%s\n",
                 Status.acDaemon, Status.acVersion, Status.acSystemName,
                 Status.acSystemRelease, Status.acMachine,
                 Status.ullUptimeSeconds, Status.uiWorkerTotal,
                 Status.uiWorkerIdle, Status.uiIkeSaTotal,
-                Status.uiIkeSaHalfOpen);
+                Status.uiIkeSaHalfOpen,
+                Status.bKernelNetlinkLoaded ? "loaded" : "not_loaded",
+                Status.bKernelLibipsecLoaded ? "loaded" : "not_loaded");
         }
         else {
             (void)fprintf(pFile, "error=%s\n", GetIpsecErrorString(eError));
@@ -317,23 +338,38 @@ static void SaveFinalState(
     IpsecChildSaList_t Children = {0};
     IpsecXfrmStateList_t States = {0};
     IpsecXfrmPolicyList_t Policies = {0};
+    IpsecDatapathStatus_t DatapathStatus = {0};
     IpsecError_t eConnections = GetIpsecConnections(pContext, &Connections);
     IpsecError_t eIkes = GetIpsecIkeSas(pContext, &Ikes);
     IpsecError_t eChildren = GetIpsecChildSas(pContext, &Children);
-    IpsecError_t eStates = GetIpsecXfrmStates(pContext, &States);
-    IpsecError_t ePolicies = GetIpsecXfrmPolicies(pContext, &Policies);
+    IpsecError_t eDatapath = GetIpsecDatapathStatus(
+        pContext, &DatapathStatus);
+    IpsecError_t eStates = IPSEC_OK;
+    IpsecError_t ePolicies = IPSEC_OK;
     FILE *pFile = OpenReportFile(pcDirectory, "final_state.txt", "w");
 
+    if ((IPSEC_OK != eDatapath) ||
+        (IPSEC_DATAPATH_KERNEL_LIBIPSEC != DatapathStatus.eType)) {
+        eStates = GetIpsecXfrmStates(pContext, &States);
+        ePolicies = GetIpsecXfrmPolicies(pContext, &Policies);
+    }
+    else {
+        /* XFRM objects are not part of the kernel-libipsec datapath. */
+    }
     if (NULL != pFile) {
         (void)fprintf(pFile,
             "connections_query=%s\nconnections=%" PRIu32 "\n"
             "ike_query=%s\nike=%" PRIu32 "\n"
             "child_query=%s\nchild=%" PRIu32 "\n"
+            "datapath_query=%s\ndatapath=%s\ntun_routes=%" PRIu32 "\n"
             "xfrm_state_query=%s\nxfrm_states=%" PRIu32 "\n"
             "xfrm_policy_query=%s\nxfrm_policies=%" PRIu32 "\n",
             GetIpsecErrorString(eConnections), Connections.uiCount,
             GetIpsecErrorString(eIkes), Ikes.uiCount,
             GetIpsecErrorString(eChildren), Children.uiCount,
+            GetIpsecErrorString(eDatapath),
+            GetReportDatapath(DatapathStatus.eType),
+            DatapathStatus.uiTunRouteCount,
             GetIpsecErrorString(eStates), States.uiCount,
             GetIpsecErrorString(ePolicies), Policies.uiCount);
         (void)fclose(pFile);
@@ -387,7 +423,8 @@ IpsecError_t WriteNativeAppAlgorithmRunReport(
             (void)fputs(
                 "number,case_id,role,ike_proposal,esp_proposal,"
                 "negotiated_ike,negotiated_esp,reqid,xfrm_states,"
-                "xfrm_policies,ike_result,esp_result,xfrm_result,"
+                "xfrm_policies,tun_routes,datapath,ike_result,esp_result,"
+                "install_result,"
                 "data_path_result,duration_ms,peer_result,result,error,cleanup,"
                 "cleanup_terminate,cleanup_wait_removed,"
                 "cleanup_remove_connection,cleanup_final_verify,cleanup_peer,"
@@ -551,6 +588,8 @@ IpsecError_t CaptureNativeAppAlgorithmCaseReport(
 {
     IpsecXfrmStateList_t States = {0};
     IpsecXfrmPolicyList_t Policies = {0};
+    IpsecDatapathStatus_t DatapathStatus = {0};
+    IpsecError_t eDatapath;
     IpsecError_t eState;
     IpsecError_t ePolicy;
     FILE *pFile;
@@ -561,8 +600,47 @@ IpsecError_t CaptureNativeAppAlgorithmCaseReport(
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     SaveSaSnapshot(pContext, pConfig, pcCaseDirectory);
-    eState = GetIpsecXfrmStates(pContext, &States);
-    ePolicy = GetIpsecXfrmPolicies(pContext, &Policies);
+    eDatapath = GetIpsecDatapathStatus(pContext, &DatapathStatus);
+    pFile = OpenReportFile(pcCaseDirectory, "datapath_active.txt", "w");
+    if (NULL != pFile) {
+        (void)fprintf(
+            pFile,
+            "query=%s\nbackend=%s\nready=%s\ntun_interface=%s\n"
+            "tun_index=%" PRIu32 "\ntun_routes=%" PRIu32 "\n",
+            GetIpsecErrorString(eDatapath),
+            GetReportDatapath(DatapathStatus.eType),
+            DatapathStatus.bReady ? "yes" : "no",
+            DatapathStatus.bTunInterfacePresent ?
+                DatapathStatus.acTunInterfaceName : "N/A",
+            DatapathStatus.uiTunInterfaceIndex,
+            DatapathStatus.uiTunRouteCount);
+        (void)fclose(pFile);
+    }
+    if ((IPSEC_OK == eDatapath) &&
+        (IPSEC_DATAPATH_KERNEL_LIBIPSEC == DatapathStatus.eType)) {
+        pFile = OpenReportFile(pcCaseDirectory,
+                               "xfrm_states_active.txt", "w");
+        if (NULL != pFile) {
+            (void)fputs("status=not_applicable\nbackend=kernel-libipsec\n",
+                        pFile);
+            (void)fclose(pFile);
+        }
+        pFile = OpenReportFile(pcCaseDirectory,
+                               "xfrm_policies_active.txt", "w");
+        if (NULL != pFile) {
+            (void)fputs("status=not_applicable\nbackend=kernel-libipsec\n",
+                        pFile);
+            (void)fclose(pFile);
+        }
+        return DatapathStatus.bReady ? IPSEC_OK : IPSEC_ERR_INTERNAL;
+    }
+    else if (IPSEC_OK != eDatapath) {
+        return eDatapath;
+    }
+    else {
+        eState = GetIpsecXfrmStates(pContext, &States);
+        ePolicy = GetIpsecXfrmPolicies(pContext, &Policies);
+    }
     pFile = OpenReportFile(pcCaseDirectory, "xfrm_states_active.txt", "w");
     if (NULL != pFile) {
         (void)fprintf(pFile, "query=%s count=%" PRIu32 " reqid=%" PRIu32 "\n",
@@ -749,8 +827,9 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             "negotiated_ike=%s\nnegotiated_esp=%s\nreqid=%" PRIu32
             "\nxfrm_states_active=%" PRIu32
             "\nxfrm_policies_active=%" PRIu32
+            "\ntun_routes=%" PRIu32 "\ndatapath=%s"
             "\npeer_result=%s\nduration_ms=%" PRIu64
-            "\nike_result=%s\nesp_result=%s\nxfrm_result=%s\n"
+            "\nike_result=%s\nesp_result=%s\ninstall_result=%s\n"
             "data_path_result=%s\n"
             "\nresult=%s\nerror=%s\ncleanup=%s"
             "\ncleanup_terminate=%s\ncleanup_wait_removed=%s"
@@ -769,11 +848,13 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             pResult->Case.acEspProposal, pResult->acNegotiatedIke,
             pResult->acNegotiatedEsp, pResult->uiReqid,
             pResult->uiXfrmStateCount, pResult->uiXfrmPolicyCount,
+            pResult->uiTunRouteCount,
+            GetReportDatapath(pResult->eDatapathType),
             ('\0' == pResult->acPeerResult[0]) ? "N/A" :
             pResult->acPeerResult, pResult->ullDurationMs,
             pResult->bIkeVerified ? "PASS" : "FAIL",
             pResult->bEspVerified ? "PASS" : "FAIL",
-            pResult->bXfrmVerified ? "PASS" : "FAIL",
+            pResult->bInstallVerified ? "PASS" : "FAIL",
             pResult->bDataPathVerified ? "PASS" : "FAIL",
             GetNativeAppAlgorithmResultName(pResult->eResult),
             GetNativeAppAlgorithmErrorText(pResult->eError),
@@ -814,7 +895,7 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
     pFile = OpenReportFile(pcCaseDirectory, "esp_result.txt", "w");
     if (NULL != pFile) {
         bool bEspOverall = pResult->bEspVerified &&
-            pResult->bXfrmVerified && pResult->bDataPathVerified;
+            pResult->bInstallVerified && pResult->bDataPathVerified;
 
         (void)fprintf(pFile,
             "case_id=%s\nrole=%s\nexchange=%s\nrequested_proposal=%s\n"
@@ -822,7 +903,8 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             "separate_child_exchange=%s\nexpected_child_ke=%s\n"
             "expect_esn=%s\nexpect_no_esn=%s\nreqid=%" PRIu32
             "\nxfrm_states=%" PRIu32 "\nxfrm_policies=%" PRIu32
-            "\nxfrm_result=%s\ndata_path_result=%s\npeer_result=%s\n"
+            "\ntun_routes=%" PRIu32 "\ndatapath=%s"
+            "\ninstall_result=%s\ndata_path_result=%s\npeer_result=%s\n"
             "result=%s\n",
             pResult->Case.acId, pcRole,
             pResult->Case.bSeparateChildExchange ?
@@ -837,8 +919,9 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             pResult->Case.bExpectEsn ? "yes" : "no",
             pResult->Case.bExpectNoEsn ? "yes" : "no",
             pResult->uiReqid, pResult->uiXfrmStateCount,
-            pResult->uiXfrmPolicyCount,
-            pResult->bXfrmVerified ? "PASS" : "FAIL",
+            pResult->uiXfrmPolicyCount, pResult->uiTunRouteCount,
+            GetReportDatapath(pResult->eDatapathType),
+            pResult->bInstallVerified ? "PASS" : "FAIL",
             pResult->bDataPathVerified ? "PASS" : "FAIL",
             ('\0' == pResult->acPeerResult[0]) ? "N/A" :
             pResult->acPeerResult, bEspOverall ? "PASS" : "FAIL");
@@ -848,9 +931,10 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
     if (NULL != pFile) {
         (void)fprintf(pFile,
             "[INFO] negotiated IKE: %s\n[INFO] negotiated ESP: %s\n"
-            "[INFO] reqid=%" PRIu32 " XFRM states=%" PRIu32
-            " policies=%" PRIu32 "\n[%s] IKE phase=%s\n"
-            "[%s] ESP phase=%s XFRM=%s DATA_PATH=%s\n"
+            "[INFO] reqid=%" PRIu32 " datapath=%s XFRM states=%" PRIu32
+            " policies=%" PRIu32 " TUN routes=%" PRIu32
+            "\n[%s] IKE phase=%s\n"
+            "[%s] ESP phase=%s INSTALL=%s DATA_PATH=%s\n"
             "[%s] result=%s error=%s "
             "cleanup=%s duration=%" PRIu64 " ms\n"
             "[INFO] cleanup stages: terminate=%s wait_removed=%s "
@@ -858,13 +942,14 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             "attempts=%" PRIu32 "/%" PRIu32 "/%" PRIu32 "/%" PRIu32
             " recovered=%s local_verified=%s\n",
             pResult->acNegotiatedIke, pResult->acNegotiatedEsp,
-            pResult->uiReqid, pResult->uiXfrmStateCount,
-            pResult->uiXfrmPolicyCount,
+            pResult->uiReqid, GetReportDatapath(pResult->eDatapathType),
+            pResult->uiXfrmStateCount, pResult->uiXfrmPolicyCount,
+            pResult->uiTunRouteCount,
             pResult->bIkeVerified ? "PASS" : "FAIL",
             pResult->bIkeVerified ? "PASS" : "FAIL",
             pResult->bEspVerified ? "PASS" : "FAIL",
             pResult->bEspVerified ? "PASS" : "FAIL",
-            pResult->bXfrmVerified ? "PASS" : "FAIL",
+            pResult->bInstallVerified ? "PASS" : "FAIL",
             pResult->bDataPathVerified ? "PASS" : "FAIL",
             (NATIVE_APP_ALGORITHM_RESULT_PASS == pResult->eResult) ?
             "PASS" : "FAIL",
@@ -893,7 +978,8 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
     if (NULL != pFile) {
         (void)fprintf(pFile,
             "%" PRIu32 ",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\","
-            "%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",\"%s\",\"%s\",\"%s\","
+            "%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
+            ",\"%s\",\"%s\",\"%s\",\"%s\","
             "\"%s\",%" PRIu64 ",\"%s\","
             "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\","
             "\"%s\",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
@@ -902,10 +988,11 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             pResult->Case.acIkeProposal, pResult->Case.acEspProposal,
             pResult->acNegotiatedIke, pResult->acNegotiatedEsp,
             pResult->uiReqid, pResult->uiXfrmStateCount,
-            pResult->uiXfrmPolicyCount,
+            pResult->uiXfrmPolicyCount, pResult->uiTunRouteCount,
+            GetReportDatapath(pResult->eDatapathType),
             pResult->bIkeVerified ? "PASS" : "FAIL",
             pResult->bEspVerified ? "PASS" : "FAIL",
-            pResult->bXfrmVerified ? "PASS" : "FAIL",
+            pResult->bInstallVerified ? "PASS" : "FAIL",
             pResult->bDataPathVerified ? "PASS" : "FAIL",
             pResult->ullDurationMs,
             ('\0' == pResult->acPeerResult[0]) ? "N/A" :

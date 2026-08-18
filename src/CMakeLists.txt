@@ -30,6 +30,8 @@ set(IPSEC_SOURCES
     ike/vici/vici_sa.c
     ike/vici/vici_stats.c
     ike/vici/vici_transport.c
+    datapath/common/datapath.c
+    datapath/kernel_libipsec/kernel_libipsec_status.c
     datapath/xfrm/xfrm_policy.c
     datapath/xfrm/xfrm_state.c
     datapath/xfrm/xfrm_stats.c
@@ -44,6 +46,8 @@ target_include_directories(ipsec_objects
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/internal
         ${CMAKE_CURRENT_SOURCE_DIR}/ike/vici
+        ${CMAKE_CURRENT_SOURCE_DIR}/datapath/common
+        ${CMAKE_CURRENT_SOURCE_DIR}/datapath/kernel_libipsec
         ${CMAKE_CURRENT_SOURCE_DIR}/datapath/xfrm
         ${CMAKE_CURRENT_SOURCE_DIR}/network)
 target_compile_options(ipsec_objects PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -74,6 +78,7 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
 
     foreach(TestName IN ITEMS
             test_vici_packet
+            test_vici_stats
             test_xfrm_stats
             test_xfrm_netlink
             test_route_netlink
@@ -84,6 +89,8 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
             ${CMAKE_CURRENT_SOURCE_DIR}/../include
             ${CMAKE_CURRENT_SOURCE_DIR}/internal
             ${CMAKE_CURRENT_SOURCE_DIR}/ike/vici
+            ${CMAKE_CURRENT_SOURCE_DIR}/datapath/common
+            ${CMAKE_CURRENT_SOURCE_DIR}/datapath/kernel_libipsec
             ${CMAKE_CURRENT_SOURCE_DIR}/datapath/xfrm
             ${CMAKE_CURRENT_SOURCE_DIR}/network)
         target_compile_definitions(${TestName} PRIVATE

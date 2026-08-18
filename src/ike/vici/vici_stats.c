@@ -5,6 +5,7 @@
 typedef struct DaemonStatusCollector {
     IpsecDaemonStatus_t *pStatus;
     char aacSections[VICI_MAX_SECTION_DEPTH][IPSEC_NAME_LENGTH];
+    char acListName[IPSEC_NAME_LENGTH];
 } DaemonStatusCollector_t;
 
 static bool MatchStatusText(
@@ -155,8 +156,34 @@ static IpsecError_t CollectStatusElement(
              (1U == pElement->uiDepth)) {
         eError = CollectStatusNestedValue(pCollector, pElement);
     }
+    else if ((VICI_ELEMENT_LIST_START == pElement->eType) &&
+             (0U == pElement->uiDepth)) {
+        eError = CopyIpsecString(pCollector->acListName,
+                                 sizeof(pCollector->acListName),
+                                 pElement->pucName,
+                                 pElement->ucNameLength);
+    }
+    else if ((VICI_ELEMENT_LIST_ITEM == pElement->eType) &&
+             (0U == pElement->uiDepth) &&
+             (0 == strcmp("plugins", pCollector->acListName))) {
+        if (MatchStatusText(pElement->pucValue, pElement->usValueLength,
+                            "kernel-netlink")) {
+            pCollector->pStatus->bKernelNetlinkLoaded = true;
+        }
+        else if (MatchStatusText(pElement->pucValue,
+                                 pElement->usValueLength,
+                                 "kernel-libipsec")) {
+            pCollector->pStatus->bKernelLibipsecLoaded = true;
+        }
+        else {
+            /* Other loaded plugins do not affect the datapath selection. */
+        }
+    }
+    else if (VICI_ELEMENT_LIST_END == pElement->eType) {
+        pCollector->acListName[0] = '\0';
+    }
     else {
-        /* Ignore lists and deeper sections. */
+        /* Ignore unrelated lists and deeper sections. */
     }
 
     return eError;
@@ -169,6 +196,26 @@ static IpsecError_t CollectStatusResponse(
 {
     return ParseViciMessage(pucMessage, uiMessageLength,
                             CollectStatusElement, pvUserData);
+}
+
+IpsecError_t ParseViciDaemonStatusMessage(
+    const uint8_t *pucMessage,
+    uint32_t uiMessageLength,
+    IpsecDaemonStatus_t *pStatus)
+{
+    DaemonStatusCollector_t Collector;
+    IpsecError_t eError;
+
+    if (NULL == pStatus) {
+        eError = IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    else {
+        memset(&Collector, 0, sizeof(Collector));
+        Collector.pStatus = pStatus;
+        eError = CollectStatusResponse(pucMessage, uiMessageLength,
+                                       &Collector);
+    }
+    return eError;
 }
 
 static IpsecError_t QueryStatusCommand(

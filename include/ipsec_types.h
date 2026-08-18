@@ -52,6 +52,12 @@ typedef enum IpsecControlMode {
     IPSEC_CONTROL_IMMEDIATE
 } IpsecControlMode_t;
 
+typedef enum IpsecDatapathType {
+    IPSEC_DATAPATH_UNKNOWN = 0,
+    IPSEC_DATAPATH_KERNEL_XFRM,
+    IPSEC_DATAPATH_KERNEL_LIBIPSEC
+} IpsecDatapathType_t;
+
 typedef enum IpsecAddressFamily {
     IPSEC_ADDRESS_FAMILY_UNSPECIFIED = 0,
     IPSEC_ADDRESS_FAMILY_IPV4,
@@ -214,7 +220,21 @@ typedef struct IpsecDaemonStatus {
     uint32_t uiWorkerIdle;
     uint32_t uiIkeSaTotal;
     uint32_t uiIkeSaHalfOpen;
+    bool bKernelNetlinkLoaded;
+    bool bKernelLibipsecLoaded;
 } IpsecDaemonStatus_t;
+
+typedef struct IpsecDatapathStatus {
+    IpsecDatapathType_t eType;
+    bool bReady;
+    bool bKernelNetlinkLoaded;
+    bool bKernelLibipsecLoaded;
+    bool bTunInterfacePresent;
+    bool bTunInterfaceUp;
+    uint32_t uiTunInterfaceIndex;
+    uint32_t uiTunRouteCount;
+    char acTunInterfaceName[IPSEC_INTERFACE_NAME_LENGTH];
+} IpsecDatapathStatus_t;
 
 typedef struct IpsecXfrmStateInfo {
     IpsecAddressFamily_t eFamily;

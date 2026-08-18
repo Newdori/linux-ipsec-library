@@ -25,6 +25,7 @@ IPSEC_0.1 {
         GetIpsecAlgorithms;
         FreeIpsecAlgorithmList;
         GetIpsecDaemonStatus;
+        GetIpsecDatapathStatus;
         GetIpsecXfrmStates;
         FreeIpsecXfrmStateList;
         GetIpsecXfrmPolicies;

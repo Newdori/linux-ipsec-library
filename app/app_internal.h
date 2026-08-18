@@ -141,6 +141,7 @@ typedef enum NativeAppAlgorithmResult {
     NATIVE_APP_ALGORITHM_RESULT_FAIL_PFS,
     NATIVE_APP_ALGORITHM_RESULT_FAIL_ESN,
     NATIVE_APP_ALGORITHM_RESULT_FAIL_XFRM,
+    NATIVE_APP_ALGORITHM_RESULT_FAIL_INSTALL,
     NATIVE_APP_ALGORITHM_RESULT_FAIL_DATA_PATH,
     NATIVE_APP_ALGORITHM_RESULT_FAIL_CLEANUP,
     NATIVE_APP_ALGORITHM_RESULT_STOPPED
@@ -180,13 +181,15 @@ typedef struct NativeAppAlgorithmCaseResult {
     uint32_t uiReqid;
     uint32_t uiXfrmStateCount;
     uint32_t uiXfrmPolicyCount;
+    uint32_t uiTunRouteCount;
     uint64_t ullDurationMs;
+    IpsecDatapathType_t eDatapathType;
     char acNegotiatedIke[IPSEC_PROPOSAL_LENGTH];
     char acNegotiatedEsp[IPSEC_PROPOSAL_LENGTH];
     char acPeerResult[NATIVE_APP_ALGORITHM_RESULT_LENGTH];
     bool bIkeVerified;
     bool bEspVerified;
-    bool bXfrmVerified;
+    bool bInstallVerified;
     bool bDataPathVerified;
 } NativeAppAlgorithmCaseResult_t;
 

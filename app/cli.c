@@ -113,6 +113,8 @@ static void PrintNativeAppHelp(void)
         "  config load FILE             load a legacy combined configuration\n"
         "  config set KEY VALUE         update one in-memory setting\n"
         "  config validate              validate and rebuild settings\n"
+        "  mode show                    show the selected peer IPsec mode\n"
+        "  mode set {transport|tunnel}  update the selected peer IPsec mode\n"
         "  connection load              load the configured connection\n"
         "  connection unload [NAME]     unload a connection\n"
         "  credential load              load the configured PSK\n"
@@ -149,7 +151,7 @@ static void PrintNativeAppHelp(void)
         "  exit                         close only this client session\n"
         "\n"
         "Show scopes:\n"
-        "  summary, all, config, credential, daemon, connections, ike,\n"
+        "  summary, all, config, credential, daemon, datapath, connections, ike,\n"
         "  child, algorithms,\n"
         "  xfrm, xfrm-state, xfrm-policy, xfrm-stat, network,\n"
         "  interfaces, addresses, routes\n"
@@ -724,6 +726,32 @@ static IpsecError_t SetNativeAppSessionConfig(
     }
     else {
         /* The caller reports the structured error. */
+    }
+    return eError;
+}
+
+static IpsecError_t ExecuteNativeAppModeCommand(
+    NativeAppSession_t *pSession,
+    uint32_t uiArgumentCount,
+    char **ppcArguments)
+{
+    IpsecError_t eError;
+
+    if ((2U == uiArgumentCount) &&
+        (0 == strcmp("show", ppcArguments[1]))) {
+        (void)printf("IPsec mode: %s\n",
+                     GetNativeAppModeText(pSession->Config.eMode));
+        eError = IPSEC_OK;
+    }
+    else if ((3U == uiArgumentCount) &&
+             (0 == strcmp("set", ppcArguments[1])) &&
+             ((0 == strcmp("transport", ppcArguments[2])) ||
+              (0 == strcmp("tunnel", ppcArguments[2])))) {
+        eError = SetNativeAppSessionConfig(pSession, "ipsec_mode",
+                                           ppcArguments[2]);
+    }
+    else {
+        eError = IPSEC_ERR_INVALID_ARGUMENT;
     }
     return eError;
 }
@@ -1377,6 +1405,10 @@ static IpsecError_t ExecuteNativeAppCommand(
     else if (0 == strcmp("config", ppcArguments[0])) {
         eError = ExecuteNativeAppConfigCommand(pSession, uiArgumentCount,
                                                ppcArguments);
+    }
+    else if (0 == strcmp("mode", ppcArguments[0])) {
+        eError = ExecuteNativeAppModeCommand(pSession, uiArgumentCount,
+                                             ppcArguments);
     }
     else if (0 == strcmp("connection", ppcArguments[0])) {
         eError = ExecuteNativeAppConnectionCommand(pSession, uiArgumentCount,

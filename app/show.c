@@ -46,6 +46,62 @@ static const char *GetNativeAppDirection(IpsecXfrmDirection_t eDirection)
     return pcDirection;
 }
 
+static const char *GetNativeAppDatapathType(
+    IpsecDatapathType_t eType)
+{
+    const char *pcType;
+
+    switch (eType) {
+    case IPSEC_DATAPATH_KERNEL_XFRM:
+        pcType = "kernel-xfrm";
+        break;
+    case IPSEC_DATAPATH_KERNEL_LIBIPSEC:
+        pcType = "kernel-libipsec";
+        break;
+    default:
+        pcType = "unknown";
+        break;
+    }
+    return pcType;
+}
+
+static void ShowNativeAppDatapathStatus(
+    const IpsecDatapathStatus_t *pStatus)
+{
+    (void)printf("[DATAPATH]\n"
+                 "  Backend          : %s\n"
+                 "  Ready            : %s\n"
+                 "  kernel-netlink   : %s\n"
+                 "  kernel-libipsec  : %s\n",
+                 GetNativeAppDatapathType(pStatus->eType),
+                 pStatus->bReady ? "yes" : "no",
+                 pStatus->bKernelNetlinkLoaded ? "loaded" : "not loaded",
+                 pStatus->bKernelLibipsecLoaded ? "loaded" : "not loaded");
+    if (IPSEC_DATAPATH_KERNEL_LIBIPSEC == pStatus->eType) {
+        (void)printf("  TUN Interface    : %s\n"
+                     "  TUN Index        : %" PRIu32 "\n"
+                     "  TUN State        : %s\n"
+                     "  TUN Routes       : %" PRIu32 "\n"
+                     "  XFRM SA/Policy   : not applicable\n",
+                     pStatus->bTunInterfacePresent ?
+                         pStatus->acTunInterfaceName : "not found",
+                     pStatus->uiTunInterfaceIndex,
+                     pStatus->bTunInterfaceUp ? "up" : "down",
+                     pStatus->uiTunRouteCount);
+    }
+    else {
+        (void)printf("  XFRM SA/Policy   : applicable\n");
+    }
+}
+
+static void ShowNativeAppXfrmNotApplicable(const char *pcSection)
+{
+    (void)printf("[%s]\n"
+                 "  Status           : not applicable\n"
+                 "  Datapath         : kernel-libipsec\n",
+                 pcSection);
+}
+
 static IpsecError_t ShowNativeAppDaemon(IpsecContext_t *pContext)
 {
     IpsecDaemonStatus_t Status = {0};
@@ -60,12 +116,16 @@ static IpsecError_t ShowNativeAppDaemon(IpsecContext_t *pContext)
                      "  Workers          : total=%" PRIu32
                      ", idle=%" PRIu32 "\n"
                      "  IKE SAs          : total=%" PRIu32
-                     ", half-open=%" PRIu32 "\n",
+                     ", half-open=%" PRIu32 "\n"
+                     "  kernel-netlink   : %s\n"
+                     "  kernel-libipsec  : %s\n",
                      Status.acDaemon, Status.acVersion, Status.acSystemName,
                      Status.acSystemRelease, Status.acMachine,
                      Status.ullUptimeSeconds, Status.uiWorkerTotal,
                      Status.uiWorkerIdle, Status.uiIkeSaTotal,
-                     Status.uiIkeSaHalfOpen);
+                     Status.uiIkeSaHalfOpen,
+                     Status.bKernelNetlinkLoaded ? "loaded" : "not loaded",
+                     Status.bKernelLibipsecLoaded ? "loaded" : "not loaded");
     }
     else {
         /* The caller reports the structured error. */
@@ -651,6 +711,10 @@ IpsecError_t ShowNativeAppInformation(
     bool bXfrm;
     bool bNetwork;
     bool bKnown;
+    bool bNeedDatapath;
+    bool bKernelLibipsec = false;
+    IpsecDatapathStatus_t DatapathStatus = {0};
+    IpsecError_t eDatapathError = IPSEC_OK;
 
     if ((NULL == pContext) || (NULL == pcScope)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
@@ -663,6 +727,7 @@ IpsecError_t ShowNativeAppInformation(
     }
     bKnown = bAll || bSummary || bXfrm || bNetwork ||
              (0 == strcmp("daemon", pcScope)) ||
+             (0 == strcmp("datapath", pcScope)) ||
              (0 == strcmp("connections", pcScope)) ||
              (0 == strcmp("ike", pcScope)) ||
              (0 == strcmp("child", pcScope)) ||
@@ -689,9 +754,32 @@ IpsecError_t ShowNativeAppInformation(
         /* Name filters apply only to named VICI objects. */
     }
 
+    bNeedDatapath = bAll || bSummary || bXfrm ||
+                    (0 == strcmp("datapath", pcScope)) ||
+                    (0 == strcmp("xfrm-state", pcScope)) ||
+                    (0 == strcmp("xfrm-policy", pcScope)) ||
+                    (0 == strcmp("xfrm-stat", pcScope));
+    if (bNeedDatapath) {
+        eDatapathError = GetIpsecDatapathStatus(pContext, &DatapathStatus);
+        bKernelLibipsec = (IPSEC_OK == eDatapathError) &&
+            (IPSEC_DATAPATH_KERNEL_LIBIPSEC == DatapathStatus.eType);
+    }
+    else {
+        /* This scope does not depend on the active datapath. */
+    }
+
     if (bAll || bSummary || (0 == strcmp("daemon", pcScope))) {
         RecordNativeAppShowError("DAEMON", ShowNativeAppDaemon(pContext),
                                  &eFirstError);
+    }
+    if (bAll || bSummary || (0 == strcmp("datapath", pcScope))) {
+        if (IPSEC_OK == eDatapathError) {
+            ShowNativeAppDatapathStatus(&DatapathStatus);
+        }
+        else {
+            RecordNativeAppShowError("DATAPATH", eDatapathError,
+                                     &eFirstError);
+        }
     }
     if (bAll || bSummary || (0 == strcmp("connections", pcScope))) {
         RecordNativeAppShowError("CONNECTIONS",
@@ -717,19 +805,34 @@ IpsecError_t ShowNativeAppInformation(
                                  &eFirstError);
     }
     if (bAll || bXfrm || (0 == strcmp("xfrm-state", pcScope))) {
-        RecordNativeAppShowError("XFRM STATES",
-                                 ShowNativeAppXfrmStates(pContext),
-                                 &eFirstError);
+        if (bKernelLibipsec) {
+            ShowNativeAppXfrmNotApplicable("XFRM STATES");
+        }
+        else {
+            RecordNativeAppShowError("XFRM STATES",
+                                     ShowNativeAppXfrmStates(pContext),
+                                     &eFirstError);
+        }
     }
     if (bAll || bXfrm || (0 == strcmp("xfrm-policy", pcScope))) {
-        RecordNativeAppShowError("XFRM POLICIES",
-                                 ShowNativeAppXfrmPolicies(pContext),
-                                 &eFirstError);
+        if (bKernelLibipsec) {
+            ShowNativeAppXfrmNotApplicable("XFRM POLICIES");
+        }
+        else {
+            RecordNativeAppShowError("XFRM POLICIES",
+                                     ShowNativeAppXfrmPolicies(pContext),
+                                     &eFirstError);
+        }
     }
     if (bAll || bXfrm || (0 == strcmp("xfrm-stat", pcScope))) {
-        RecordNativeAppShowError("XFRM STATISTICS",
-                                 ShowNativeAppXfrmStatistics(),
-                                 &eFirstError);
+        if (bKernelLibipsec) {
+            ShowNativeAppXfrmNotApplicable("XFRM STATISTICS");
+        }
+        else {
+            RecordNativeAppShowError("XFRM STATISTICS",
+                                     ShowNativeAppXfrmStatistics(),
+                                     &eFirstError);
+        }
     }
     if (bAll || bNetwork || (0 == strcmp("interfaces", pcScope))) {
         RecordNativeAppShowError("INTERFACES", ShowNativeAppInterfaces(),
