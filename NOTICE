@@ -1,0 +1,9 @@
+libipsec
+Copyright 2026 NETCUS
+
+This product implements interoperability with the separately distributed
+strongSwan daemon through the VICI protocol. strongSwan is not included in
+this repository and is licensed separately by its copyright holders.
+
+Linux and strongSwan are trademarks or project names of their respective
+owners. Their names are used only to describe interoperability.

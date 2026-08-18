@@ -1,0 +1,7 @@
+role=initiator
+local_ip=192.168.33.100
+local_id=rcst-controller
+psk_file=./ipsec_test.psk
+vici_uri=unix:///run/charon.vici
+command_timeout_sec=60
+peer_port=39002

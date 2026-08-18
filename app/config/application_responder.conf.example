@@ -1,0 +1,7 @@
+role=responder
+local_ip=192.168.33.101
+psk_file=./ipsec_test.psk
+vici_uri=unix:///run/charon.vici
+command_timeout_sec=60
+peer_server_ip=192.168.33.100
+peer_port=39002

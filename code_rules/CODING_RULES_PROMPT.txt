@@ -1,0 +1,110 @@
+다음 C 코딩 규칙을 모든 코드 작성 및 수정 작업에 적용하라.
+
+1. 네이밍 규칙
+- 함수명, 변수의 의미 이름, 사용자 정의 타입 이름에는 PascalCase를 사용한다.
+- 함수명의 첫 단어는 반드시 동사로 작성한다.
+- typedef struct로 정의한 타입 이름은 `_t`로 끝낸다.
+
+2. 기본 타입 규칙
+- int, unsigned int 같은 기본 정수 타입을 직접 사용하지 않는다.
+- 가능한 경우 <stdint.h>에 정의된 int32_t, uint32_t 등의 고정 폭 정수 타입을 사용한다.
+- C/C++ 표준이 시그니처를 직접 규정한 진입점(예: int main(void))은 예외로 한다.
+
+3. 변수 접두어 규칙
+- 변수명은 특성과 타입을 나타내는 소문자 접두어 뒤에 PascalCase 의미 이름을 붙인다.
+- 접두어 우선순위는 `g`, `p`, `a`, `u`, 기본 타입 접두어 순이다.
+- 접두어의 의미는 다음과 같다.
+  - g: 전역 변수
+  - p: 포인터
+  - a: 배열
+  - u: unsigned
+  - c: char
+  - s: short
+  - i: int
+  - l: long
+  - ll: long long
+  - f: float
+  - d: double
+  - b: bool
+  - v: void
+- signed 전용 접두어는 사용하지 않는다.
+- 실제 특성에 해당하는 접두어만 붙인다. 예를 들어 단순 배열에는 p를 붙이지 않는다.
+
+예:
+```c
+int32_t iCount;
+uint32_t uiCount;
+void *pvContext;
+uint32_t auiValues[10];
+uint32_t gauiLookupTable[10];
+uint32_t *gpauiLookupTable[10];
+```
+
+4. 제어문 서식
+- if, while, for, switch, do의 여는 중괄호는 해당 구문과 같은 줄에 작성한다.
+- else와 else if는 앞 블록의 닫는 중괄호 다음 줄에 작성한다.
+- switch의 case와 default는 들여쓰기하지 않고 switch와 같은 열에 작성한다.
+
+예:
+```c
+if (bCondition) {
+    /* 처리 */
+}
+else {
+    /* 처리 */
+}
+
+while (bCondition) {
+    /* 처리 */
+}
+
+for (iIndex = 0; iIndex < iCount; iIndex++) {
+    /* 처리 */
+}
+
+switch (iType) {
+case 0:
+    /* 처리 */
+    break;
+
+default:
+    /* 처리 */
+    break;
+}
+
+do {
+    /* 처리 */
+} while (bCondition);
+```
+
+5. 비교식 규칙
+- `==`와 `!=` 연산자를 사용할 때만 상수 값을 왼쪽에 작성한다.
+- 그 외 비교 연산자에서는 변수 또는 표현식을 왼쪽에 작성한다.
+
+예:
+```c
+if (0 == iResult) {
+}
+else {
+}
+
+if (NULL != pvContext) {
+}
+else {
+}
+
+if (iCount > 0) {
+}
+else {
+}
+```
+
+6. 안전한 함수 사용
+- sprintf 대신 snprintf처럼 출력 크기를 제한할 수 있는 함수를 사용한다.
+- snprintf의 반환값을 검사하여 오류와 문자열 잘림을 처리한다.
+
+7. 분기 작성 원칙
+- 가능한 경우 if를 단독으로 사용하지 말고 else까지 작성하여 정상 및 예외 흐름을 명확히 처리한다.
+- 의미 없는 else 블록은 억지로 추가하지 않는다.
+
+코드를 작성하거나 수정한 뒤 위 규칙을 위반한 부분이 없는지 검토하라.

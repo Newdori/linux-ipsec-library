@@ -1,0 +1,10 @@
+src/.build/
+lib/
+app/bin/
+app/obj/
+results/
+compile_commands.json
+*.o
+*.a
+*.so
+*.so.*

@@ -1,0 +1,104 @@
+SHELL := /bin/sh
+
+.DEFAULT_GOAL := all
+
+HOST_CC ?= gcc
+HOST_AR ?= ar
+HOST_RANLIB ?= ranlib
+ZYNQMP_CC ?= aarch64-linux-gnu-gcc
+ZYNQMP_AR ?= aarch64-linux-gnu-ar
+ZYNQMP_RANLIB ?= aarch64-linux-gnu-ranlib
+
+COMMON_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror -fPIC -O2
+COMMON_CPPFLAGS := -I../include -Iinternal -Iike/vici -Idatapath/xfrm -Inetwork
+COMMON_LDLIBS := -pthread
+
+SOURCES := \
+	core/buffer_validate.c \
+	core/context.c \
+	core/error.c \
+	core/ipsec.c \
+	core/log.c \
+	core/netlink.c \
+	core/psk.c \
+	core/secure_zero.c \
+	core/util.c \
+	ike/vici/vici_algorithm.c \
+	ike/vici/vici_client.c \
+	ike/vici/vici_connection.c \
+	ike/vici/vici_credential.c \
+	ike/vici/vici_packet.c \
+	ike/vici/vici_parser.c \
+	ike/vici/vici_sa.c \
+	ike/vici/vici_stats.c \
+	ike/vici/vici_transport.c \
+	datapath/xfrm/xfrm_policy.c \
+	datapath/xfrm/xfrm_state.c \
+	datapath/xfrm/xfrm_stats.c \
+	network/address.c \
+	network/interface.c \
+	network/route.c
+
+PLATFORM ?= undefined
+ARCH_DIRECTORY ?= undefined
+BUILD_DIRECTORY := .build/$(PLATFORM)
+OBJECTS := $(SOURCES:%.c=$(BUILD_DIRECTORY)/%.o)
+BUILD_STATIC_LIBRARY := $(BUILD_DIRECTORY)/libipsec.a
+BUILD_SHARED_LIBRARY := $(BUILD_DIRECTORY)/libipsec.so
+OUTPUT_DIRECTORY := ../lib/$(ARCH_DIRECTORY)
+CLEAN_REQUESTED := $(filter clean,$(MAKECMDGOALS))
+
+.PHONY: all host zynqmp build-target clean clean-host clean-zynqmp
+
+all: host zynqmp
+
+host:
+ifeq ($(CLEAN_REQUESTED),)
+	$(MAKE) --no-print-directory PLATFORM=host ARCH_DIRECTORY=x86_64 \
+		CC="$(HOST_CC)" AR="$(HOST_AR)" RANLIB="$(HOST_RANLIB)" build-target
+else
+	@:
+endif
+
+zynqmp:
+ifeq ($(CLEAN_REQUESTED),)
+	$(MAKE) --no-print-directory PLATFORM=zynqmp ARCH_DIRECTORY=zynqmp \
+		CC="$(ZYNQMP_CC)" AR="$(ZYNQMP_AR)" RANLIB="$(ZYNQMP_RANLIB)" build-target
+else
+	@:
+endif
+
+build-target: $(BUILD_STATIC_LIBRARY) $(BUILD_SHARED_LIBRARY)
+	@mkdir -p "$(OUTPUT_DIRECTORY)"
+	@cp "$(BUILD_STATIC_LIBRARY)" "$(OUTPUT_DIRECTORY)/libipsec.a"
+	@cp "$(BUILD_SHARED_LIBRARY)" "$(OUTPUT_DIRECTORY)/libipsec.so"
+	@rm -rf "$(BUILD_DIRECTORY)"
+	@printf '%s\n' "Generated $(OUTPUT_DIRECTORY)/libipsec.a"
+	@printf '%s\n' "Generated $(OUTPUT_DIRECTORY)/libipsec.so"
+
+$(BUILD_DIRECTORY)/%.o: %.c
+	@mkdir -p "$(dir $@)"
+	$(CC) $(COMMON_CPPFLAGS) $(CPPFLAGS) $(COMMON_CFLAGS) $(CFLAGS) -c "$<" -o "$@"
+
+$(BUILD_STATIC_LIBRARY): $(OBJECTS)
+	$(AR) rcs "$@" $(OBJECTS)
+	$(RANLIB) "$@"
+
+$(BUILD_SHARED_LIBRARY): $(OBJECTS) libipsec.map
+	$(CC) -shared -Wl,--version-script="$(CURDIR)/libipsec.map" \
+		-o "$@" $(OBJECTS) $(LDFLAGS) $(COMMON_LDLIBS) $(LDLIBS)
+
+clean:
+ifeq ($(filter host zynqmp,$(MAKECMDGOALS)),host)
+	$(MAKE) --no-print-directory clean-host
+else ifeq ($(filter host zynqmp,$(MAKECMDGOALS)),zynqmp)
+	$(MAKE) --no-print-directory clean-zynqmp
+else
+	$(MAKE) --no-print-directory clean-host clean-zynqmp
+endif
+
+clean-host:
+	@rm -rf .build/host .build/cmake/host ../lib/x86_64
+
+clean-zynqmp:
+	@rm -rf .build/zynqmp .build/cmake/zynqmp ../lib/zynqmp
