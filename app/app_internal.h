@@ -19,9 +19,15 @@
 #define NATIVE_APP_ALGORITHM_CASE_ID_LENGTH  64U
 #define NATIVE_APP_ALGORITHM_RUN_ID_LENGTH    96U
 #define NATIVE_APP_ALGORITHM_RESULT_LENGTH  128U
+#define NATIVE_APP_ALGORITHM_REASON_LENGTH  256U
+#define NATIVE_APP_ALGORITHM_CAPABILITY_LENGTH 512U
 #define NATIVE_APP_ALGORITHM_DEFAULT_PORT  39001U
 #define NATIVE_APP_ALGORITHM_DEFAULT_LIMIT   10U
 #define NATIVE_APP_PEER_DEFAULT_PORT        39002U
+
+#ifndef NATIVE_APP_BUILD_ID
+#define NATIVE_APP_BUILD_ID "unknown"
+#endif
 #define NATIVE_APP_PEER_CAPACITY              256U
 #define NATIVE_APP_PEER_LOGON_LIMIT            100U
 #define NATIVE_APP_PEER_LISTENER_POLL_MS       250U
@@ -133,6 +139,7 @@ typedef enum NativeAppAlgorithmMode {
 
 typedef enum NativeAppAlgorithmResult {
     NATIVE_APP_ALGORITHM_RESULT_PASS = 0,
+    NATIVE_APP_ALGORITHM_RESULT_EXPECTED_NOT_SUPPORTED,
     NATIVE_APP_ALGORITHM_RESULT_FAIL_CONFIG,
     NATIVE_APP_ALGORITHM_RESULT_FAIL_SYNC,
     NATIVE_APP_ALGORITHM_RESULT_FAIL_IKE,
@@ -146,6 +153,67 @@ typedef enum NativeAppAlgorithmResult {
     NATIVE_APP_ALGORITHM_RESULT_FAIL_CLEANUP,
     NATIVE_APP_ALGORITHM_RESULT_STOPPED
 } NativeAppAlgorithmResult_t;
+
+typedef enum NativeAppAlgorithmPhase {
+    NATIVE_APP_ALGORITHM_PHASE_IKE = 0,
+    NATIVE_APP_ALGORITHM_PHASE_ESP,
+    NATIVE_APP_ALGORITHM_PHASE_INSTALL,
+    NATIVE_APP_ALGORITHM_PHASE_DATA_PATH
+} NativeAppAlgorithmPhase_t;
+
+typedef enum NativeAppAlgorithmPhaseResult {
+    NATIVE_APP_ALGORITHM_PHASE_NOT_RUN = 0,
+    NATIVE_APP_ALGORITHM_PHASE_PASS,
+    NATIVE_APP_ALGORITHM_PHASE_FAIL,
+    NATIVE_APP_ALGORITHM_PHASE_NOT_APPLICABLE
+} NativeAppAlgorithmPhaseResult_t;
+
+typedef enum NativeAppAlgorithmFailureStage {
+    NATIVE_APP_ALGORITHM_FAILURE_NONE = 0,
+    NATIVE_APP_ALGORITHM_FAILURE_CONFIG,
+    NATIVE_APP_ALGORITHM_FAILURE_SYNC,
+    NATIVE_APP_ALGORITHM_FAILURE_IKE_NEGOTIATION,
+    NATIVE_APP_ALGORITHM_FAILURE_CHILD_NEGOTIATION,
+    NATIVE_APP_ALGORITHM_FAILURE_PROPOSAL_VALIDATION,
+    NATIVE_APP_ALGORITHM_FAILURE_SA_INSTALL,
+    NATIVE_APP_ALGORITHM_FAILURE_TRAFFIC,
+    NATIVE_APP_ALGORITHM_FAILURE_CLEANUP
+} NativeAppAlgorithmFailureStage_t;
+
+typedef enum NativeAppAlgorithmErrorSource {
+    NATIVE_APP_ALGORITHM_ERROR_NONE = 0,
+    NATIVE_APP_ALGORITHM_ERROR_APPLICATION,
+    NATIVE_APP_ALGORITHM_ERROR_TEST_CONTROL,
+    NATIVE_APP_ALGORITHM_ERROR_VICI,
+    NATIVE_APP_ALGORITHM_ERROR_DATAPATH,
+    NATIVE_APP_ALGORITHM_ERROR_PEER,
+    NATIVE_APP_ALGORITHM_ERROR_CLEANUP
+} NativeAppAlgorithmErrorSource_t;
+
+typedef enum NativeAppAlgorithmUnsupportedSide {
+    NATIVE_APP_ALGORITHM_UNSUPPORTED_NONE = 0,
+    NATIVE_APP_ALGORITHM_UNSUPPORTED_LOCAL,
+    NATIVE_APP_ALGORITHM_UNSUPPORTED_PEER,
+    NATIVE_APP_ALGORITHM_UNSUPPORTED_BOTH
+} NativeAppAlgorithmUnsupportedSide_t;
+
+typedef struct NativeAppAlgorithmCapabilities {
+    IpsecDatapathType_t eDatapathType;
+    uint64_t ullOpenSslVersion;
+    char acOsName[IPSEC_OS_NAME_LENGTH];
+    char acOsVersion[IPSEC_VERSION_LENGTH];
+    char acDaemonVersion[IPSEC_VERSION_LENGTH];
+    char acKernelRelease[IPSEC_OS_NAME_LENGTH];
+    char acMachine[IPSEC_OS_NAME_LENGTH];
+    char acOpenSslLibrary[NATIVE_APP_PATH_LENGTH];
+    char acModp8192Plugin[IPSEC_PLUGIN_LENGTH];
+    char acKdfPrfPlusPlugin[IPSEC_PLUGIN_LENGTH];
+    char acModp8192Reason[NATIVE_APP_ALGORITHM_REASON_LENGTH];
+    bool bDatapathReady;
+    bool bOpenSslVersionKnown;
+    bool bEsnSupported;
+    bool bModp8192Supported;
+} NativeAppAlgorithmCapabilities_t;
 
 typedef struct NativeAppAlgorithmCase {
     uint32_t uiNumber;
@@ -175,7 +243,12 @@ typedef struct NativeAppAlgorithmCleanup {
 typedef struct NativeAppAlgorithmCaseResult {
     NativeAppAlgorithmCase_t Case;
     NativeAppAlgorithmResult_t eResult;
+    NativeAppAlgorithmResult_t ePeerCaseResult;
+    NativeAppAlgorithmFailureStage_t eFailureStage;
+    NativeAppAlgorithmErrorSource_t eErrorSource;
+    NativeAppAlgorithmUnsupportedSide_t eUnsupportedSide;
     IpsecError_t eError;
+    IpsecError_t ePeerCaseError;
     IpsecError_t eCleanupError;
     NativeAppAlgorithmCleanup_t Cleanup;
     uint32_t uiReqid;
@@ -183,10 +256,21 @@ typedef struct NativeAppAlgorithmCaseResult {
     uint32_t uiXfrmPolicyCount;
     uint32_t uiTunRouteCount;
     uint64_t ullDurationMs;
+    uint64_t ullBytesIn;
+    uint64_t ullBytesOut;
+    uint64_t ullPacketsIn;
+    uint64_t ullPacketsOut;
     IpsecDatapathType_t eDatapathType;
     char acNegotiatedIke[IPSEC_PROPOSAL_LENGTH];
     char acNegotiatedEsp[IPSEC_PROPOSAL_LENGTH];
+    char acExpectedIke[IPSEC_PROPOSAL_LENGTH];
+    char acExpectedEsp[IPSEC_PROPOSAL_LENGTH];
     char acPeerResult[NATIVE_APP_ALGORITHM_RESULT_LENGTH];
+    char acSupportReason[NATIVE_APP_ALGORITHM_REASON_LENGTH];
+    char acPeerSupportReason[NATIVE_APP_ALGORITHM_REASON_LENGTH];
+    char acPeerCapability[NATIVE_APP_ALGORITHM_CAPABILITY_LENGTH];
+    bool bExecutionStarted;
+    bool bPeerCaseKnown;
     bool bIkeVerified;
     bool bEspVerified;
     bool bInstallVerified;
@@ -207,6 +291,22 @@ typedef struct NativeAppAlgorithmOptions {
 
 const char *GetNativeAppAlgorithmResultName(
     NativeAppAlgorithmResult_t eResult);
+
+const char *GetNativeAppAlgorithmFailureStageName(
+    NativeAppAlgorithmFailureStage_t eStage);
+
+const char *GetNativeAppAlgorithmErrorSourceName(
+    NativeAppAlgorithmErrorSource_t eSource);
+
+const char *GetNativeAppAlgorithmUnsupportedSideName(
+    NativeAppAlgorithmUnsupportedSide_t eSide);
+
+NativeAppAlgorithmPhaseResult_t GetNativeAppAlgorithmPhaseResult(
+    const NativeAppAlgorithmCaseResult_t *pResult,
+    NativeAppAlgorithmPhase_t ePhase);
+
+const char *GetNativeAppAlgorithmPhaseResultName(
+    NativeAppAlgorithmPhaseResult_t eResult);
 
 const char *GetNativeAppAlgorithmErrorText(
     IpsecError_t eError);
@@ -331,6 +431,29 @@ IpsecError_t GetNativeAppAlgorithmCase(
     const char *pcCustomIke,
     const char *pcCustomEsp,
     NativeAppAlgorithmCase_t *pCase);
+
+IpsecError_t BuildNativeAppExpectedProposals(
+    const NativeAppAlgorithmCase_t *pCase,
+    char *pcExpectedIke,
+    size_t zExpectedIkeLength,
+    char *pcExpectedEsp,
+    size_t zExpectedEspLength);
+
+IpsecError_t CollectNativeAppAlgorithmCapabilities(
+    IpsecContext_t *pContext,
+    NativeAppAlgorithmCapabilities_t *pCapabilities);
+
+IpsecError_t CheckNativeAppAlgorithmCaseSupport(
+    const NativeAppAlgorithmCapabilities_t *pCapabilities,
+    const NativeAppAlgorithmCase_t *pCase,
+    char *pcReason,
+    size_t zReasonLength);
+
+IpsecError_t FormatNativeAppAlgorithmCapabilitySummary(
+    const NativeAppAlgorithmCapabilities_t *pCapabilities,
+    const char *pcSupportReason,
+    char *pcSummary,
+    size_t zSummaryLength);
 
 IpsecError_t RunNativeAppAlgorithmClient(
     IpsecContext_t *pContext,

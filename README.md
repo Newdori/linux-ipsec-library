@@ -163,6 +163,7 @@ connection load
 credential load
 ike initiate
 ike wait
+child initiate
 child wait
 show summary detail
 show datapath
@@ -196,9 +197,11 @@ For one automated ESP acceptance case, leave the responder waiting with:
 ipsec> test algorithm serve --port 39001
 ```
 
-Then run this at the initiator. The generated schema-version-5 `results.json`
-records `datapath=kernel-libipsec`, `install_result=PASS`, and the observed TUN
-route count instead of claiming that XFRM objects exist:
+Then run this at the initiator. The generated schema-version-7 `results.json`
+records the exact negotiated proposals, local and peer errors, failure stage,
+IKE/ESP/install/data-path phase results, packet/byte counters, and
+`datapath=kernel-libipsec`. It records the observed TUN route count instead of
+claiming that XFRM objects exist:
 
 ```text
 ipsec> test algorithm run baseline --limit 1 --port 39001

@@ -14,7 +14,13 @@ CPPFLAGS += -I../include -I.
 CFLAGS += -g -O2 -std=c11
 CFLAGS += -Wall -Wextra -Wpedantic -Werror
 CFLAGS += -D_POSIX_C_SOURCE=200809L
-LDLIBS += -lpthread
+LDLIBS += -lpthread -ldl
+
+BUILD_ID ?= $(shell git -C .. describe --always --dirty 2>/dev/null)
+ifeq ($(strip $(BUILD_ID)),)
+BUILD_ID := unknown
+endif
+CPPFLAGS += -DNATIVE_APP_BUILD_ID=\"$(BUILD_ID)\"
 
 ifneq ($(strip $(SYSROOT)),)
 CPPFLAGS += --sysroot=$(SYSROOT)
@@ -36,6 +42,7 @@ OUTPUT_DIR = bin/$(TARGET)
 APPLICATION = $(OUTPUT_DIR)/ipsec_app
 
 SOURCES = \
+	algorithm_capability.c \
 	algorithm_catalog.c \
 	algorithm_report.c \
 	algorithm_runner.c \

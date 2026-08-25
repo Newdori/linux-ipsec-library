@@ -1231,6 +1231,8 @@ static IpsecError_t CheckNativeAppAlgorithmCatalog(
 
     for (uiIndex = 0U; uiIndex < uiCount; uiIndex++) {
         NativeAppAlgorithmCase_t Case;
+        char acExpectedIke[IPSEC_PROPOSAL_LENGTH] = {0};
+        char acExpectedEsp[IPSEC_PROPOSAL_LENGTH] = {0};
         IpsecError_t eError = GetNativeAppAlgorithmCase(
             eMode, uiIndex, pConfig,
             (NATIVE_APP_ALGORITHM_CUSTOM == eMode) ?
@@ -1238,8 +1240,23 @@ static IpsecError_t CheckNativeAppAlgorithmCatalog(
             (NATIVE_APP_ALGORITHM_CUSTOM == eMode) ?
             pConfig->acEspProposals : NULL, &Case);
 
+        if (IPSEC_OK == eError) {
+            eError = BuildNativeAppExpectedProposals(
+                &Case, acExpectedIke, sizeof(acExpectedIke),
+                acExpectedEsp, sizeof(acExpectedEsp));
+        }
+        else {
+            /* Preserve the testcase generation error. */
+        }
         if (IPSEC_OK != eError) {
             return eError;
+        }
+        else if (('\0' == acExpectedIke[0]) ||
+                 ('\0' == acExpectedEsp[0])) {
+            return IPSEC_ERR_INTERNAL;
+        }
+        else {
+            /* Continue through the complete exact-validation catalog. */
         }
     }
     (void)printf("algorithm catalog valid: mode=%s cases=%" PRIu32 "\n",

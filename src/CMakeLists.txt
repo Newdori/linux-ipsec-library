@@ -100,6 +100,21 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
         add_test(NAME ${TestName} COMMAND ${TestName})
     endforeach()
 
+    add_executable(test_algorithm_validation
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_algorithm_validation.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app/algorithm_catalog.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app/algorithm_capability.c)
+    target_include_directories(test_algorithm_validation PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app)
+    target_compile_definitions(test_algorithm_validation PRIVATE
+        _POSIX_C_SOURCE=200809L)
+    target_compile_options(test_algorithm_validation PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(test_algorithm_validation PRIVATE
+        ipsec_static ${CMAKE_DL_LIBS})
+    add_test(NAME test_algorithm_validation COMMAND test_algorithm_validation)
+
     add_executable(test_cpp_header
         ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_cpp_header.cpp)
     target_include_directories(test_cpp_header PRIVATE

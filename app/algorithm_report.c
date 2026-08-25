@@ -107,6 +107,22 @@ static const char *GetReportDatapath(IpsecDatapathType_t eType)
     return pcDatapath;
 }
 
+static const char *GetReportPhaseResult(
+    const NativeAppAlgorithmCaseResult_t *pResult,
+    NativeAppAlgorithmPhase_t ePhase)
+{
+    return GetNativeAppAlgorithmPhaseResultName(
+        GetNativeAppAlgorithmPhaseResult(pResult, ePhase));
+}
+
+static const char *GetReportOverallResult(
+    NativeAppAlgorithmResult_t eResult)
+{
+    return (NATIVE_APP_ALGORITHM_RESULT_PASS == eResult) ? "PASS" :
+        ((NATIVE_APP_ALGORITHM_RESULT_EXPECTED_NOT_SUPPORTED == eResult) ?
+         "EXPECTED_NOT_SUPPORTED" : "FAIL");
+}
+
 static const char *GetReportFamily(IpsecAddressFamily_t eFamily)
 {
     return (IPSEC_ADDRESS_FAMILY_IPV6 == eFamily) ? "IPv6" : "IPv4";
@@ -390,6 +406,8 @@ IpsecError_t WriteNativeAppAlgorithmRunReport(
     uint32_t uiRequested,
     bool bFinal)
 {
+    NativeAppAlgorithmCapabilities_t Capabilities = {0};
+    IpsecError_t eCapabilities;
     FILE *pFile;
 
     if ((NULL == pContext) || (NULL == pConfig) || (NULL == pcRole) ||
@@ -397,6 +415,8 @@ IpsecError_t WriteNativeAppAlgorithmRunReport(
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     if (!bFinal) {
+        eCapabilities = CollectNativeAppAlgorithmCapabilities(
+            pContext, &Capabilities);
         pFile = OpenReportFile(pcResultDirectory, "run_context.txt", "w");
         if (NULL == pFile) {
             return IPSEC_ERR_FILE_OPEN;
@@ -405,13 +425,47 @@ IpsecError_t WriteNativeAppAlgorithmRunReport(
             "role=%s\nmode=%s\nrequested=%" PRIu32 "\n"
             "local_address=%s\nremote_address=%s\nlocal_id=%s\nremote_id=%s\n"
             "connection=%s\nchild=%s\nipsec_mode=%s\nvici_socket=%s\n"
-            "timeout_ms=%" PRIu32 "\n",
+            "timeout_ms=%" PRIu32 "\ncapability_query=%s\n"
+            "application_build_id=%s\nos_name=%s\nos_version=%s\n"
+            "strongswan_version=%s\nkernel_release=%s\nmachine=%s\n"
+            "capability_datapath=%s\nesn_support=%s\n"
+            "modp8192_plugin=%s\nkdf_prf_plus_plugin=%s\n"
+            "openssl_library=%s\nopenssl_version=0x%" PRIx64 "\n"
+            "openssl_version_known=%s\nmodp8192_support=%s\n"
+            "modp8192_reason=%s\n",
             pcRole, GetNativeAppAlgorithmModeName(eMode), uiRequested,
             pConfig->acLocalAddress, pConfig->acRemoteAddress,
             pConfig->acLocalId, pConfig->acRemoteId,
             pConfig->acConnectionName, pConfig->acChildName,
             GetReportMode(pConfig->eMode), pConfig->acViciSocket,
-            pConfig->uiTimeoutMs);
+            pConfig->uiTimeoutMs, GetIpsecErrorString(eCapabilities),
+            NATIVE_APP_BUILD_ID,
+            ('\0' == Capabilities.acOsName[0]) ? "unknown" :
+                Capabilities.acOsName,
+            ('\0' == Capabilities.acOsVersion[0]) ? "unknown" :
+                Capabilities.acOsVersion,
+            ('\0' == Capabilities.acDaemonVersion[0]) ? "unknown" :
+                Capabilities.acDaemonVersion,
+            ('\0' == Capabilities.acKernelRelease[0]) ? "unknown" :
+                Capabilities.acKernelRelease,
+            ('\0' == Capabilities.acMachine[0]) ? "unknown" :
+                Capabilities.acMachine,
+            GetReportDatapath(Capabilities.eDatapathType),
+            Capabilities.bEsnSupported ? "supported" :
+                "expected_not_supported",
+            ('\0' == Capabilities.acModp8192Plugin[0]) ? "unknown" :
+                Capabilities.acModp8192Plugin,
+            ('\0' == Capabilities.acKdfPrfPlusPlugin[0]) ? "unknown" :
+                Capabilities.acKdfPrfPlusPlugin,
+            ('\0' == Capabilities.acOpenSslLibrary[0]) ? "unknown" :
+                Capabilities.acOpenSslLibrary,
+            Capabilities.ullOpenSslVersion,
+            Capabilities.bOpenSslVersionKnown ? "yes" : "no",
+            !Capabilities.bModp8192Supported ? "expected_not_supported" :
+                (Capabilities.bOpenSslVersionKnown ? "supported" :
+                 "runtime_validation_required"),
+            ('\0' == Capabilities.acModp8192Reason[0]) ? "none" :
+                Capabilities.acModp8192Reason);
         (void)fclose(pFile);
         SaveDaemonStatus(pContext, pcResultDirectory,
                          "daemon_status_initial.txt");
@@ -422,10 +476,12 @@ IpsecError_t WriteNativeAppAlgorithmRunReport(
         if (NULL != pFile) {
             (void)fputs(
                 "number,case_id,role,ike_proposal,esp_proposal,"
-                "negotiated_ike,negotiated_esp,reqid,xfrm_states,"
+                "expected_ike,expected_esp,negotiated_ike,negotiated_esp,"
+                "support_reason,peer_support_reason,unsupported_side,"
+                "failure_stage,error_source,local_error,peer_result,"
+                "peer_error,reqid,xfrm_states,"
                 "xfrm_policies,tun_routes,datapath,ike_result,esp_result,"
-                "install_result,"
-                "data_path_result,duration_ms,peer_result,result,error,cleanup,"
+                "install_result,data_path_result,duration_ms,result,cleanup,"
                 "cleanup_terminate,cleanup_wait_removed,"
                 "cleanup_remove_connection,cleanup_final_verify,cleanup_peer,"
                 "cleanup_terminate_attempts,cleanup_wait_attempts,"
@@ -824,14 +880,20 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
         (void)fprintf(pFile,
             "number=%" PRIu32 "\nordinal=%" PRIu32 "\nrequested=%" PRIu32
             "\ncase_id=%s\nrole=%s\nike_proposal=%s\nesp_proposal=%s\n"
+            "expected_ike=%s\nexpected_esp=%s\nsupport_reason=%s\n"
+            "peer_support_reason=%s\npeer_capability=%s\n"
+            "unsupported_side=%s\nfailure_stage=%s\nerror_source=%s\n"
             "negotiated_ike=%s\nnegotiated_esp=%s\nreqid=%" PRIu32
             "\nxfrm_states_active=%" PRIu32
             "\nxfrm_policies_active=%" PRIu32
             "\ntun_routes=%" PRIu32 "\ndatapath=%s"
+            "\nbytes_in=%" PRIu64 "\nbytes_out=%" PRIu64
+            "\npackets_in=%" PRIu64 "\npackets_out=%" PRIu64
             "\npeer_result=%s\nduration_ms=%" PRIu64
             "\nike_result=%s\nesp_result=%s\ninstall_result=%s\n"
             "data_path_result=%s\n"
-            "\nresult=%s\nerror=%s\ncleanup=%s"
+            "\nresult=%s\nlocal_error=%s\npeer_error=%s\nerror=%s"
+            "\ncleanup=%s"
             "\ncleanup_terminate=%s\ncleanup_wait_removed=%s"
             "\ncleanup_remove_connection=%s\ncleanup_final_verify=%s"
             "\ncleanup_peer=%s\ncleanup_terminate_attempts=%" PRIu32
@@ -845,18 +907,37 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             "\nxfrm_policies_remaining=%" PRIu32 "\noverall=%s\n",
             pResult->Case.uiNumber, uiOrdinal, uiRequested,
             pResult->Case.acId, pcRole, pResult->Case.acIkeProposal,
-            pResult->Case.acEspProposal, pResult->acNegotiatedIke,
-            pResult->acNegotiatedEsp, pResult->uiReqid,
+            pResult->Case.acEspProposal, pResult->acExpectedIke,
+            pResult->acExpectedEsp,
+            ('\0' == pResult->acSupportReason[0]) ? "none" :
+                pResult->acSupportReason,
+            ('\0' == pResult->acPeerSupportReason[0]) ? "none" :
+                pResult->acPeerSupportReason,
+            ('\0' == pResult->acPeerCapability[0]) ? "unknown" :
+                pResult->acPeerCapability,
+            GetNativeAppAlgorithmUnsupportedSideName(
+                pResult->eUnsupportedSide),
+            GetNativeAppAlgorithmFailureStageName(pResult->eFailureStage),
+            GetNativeAppAlgorithmErrorSourceName(pResult->eErrorSource),
+            pResult->acNegotiatedIke, pResult->acNegotiatedEsp,
+            pResult->uiReqid,
             pResult->uiXfrmStateCount, pResult->uiXfrmPolicyCount,
             pResult->uiTunRouteCount,
             GetReportDatapath(pResult->eDatapathType),
+            pResult->ullBytesIn, pResult->ullBytesOut,
+            pResult->ullPacketsIn, pResult->ullPacketsOut,
             ('\0' == pResult->acPeerResult[0]) ? "N/A" :
             pResult->acPeerResult, pResult->ullDurationMs,
-            pResult->bIkeVerified ? "PASS" : "FAIL",
-            pResult->bEspVerified ? "PASS" : "FAIL",
-            pResult->bInstallVerified ? "PASS" : "FAIL",
-            pResult->bDataPathVerified ? "PASS" : "FAIL",
+            GetReportPhaseResult(pResult, NATIVE_APP_ALGORITHM_PHASE_IKE),
+            GetReportPhaseResult(pResult, NATIVE_APP_ALGORITHM_PHASE_ESP),
+            GetReportPhaseResult(pResult, NATIVE_APP_ALGORITHM_PHASE_INSTALL),
+            GetReportPhaseResult(
+                pResult, NATIVE_APP_ALGORITHM_PHASE_DATA_PATH),
             GetNativeAppAlgorithmResultName(pResult->eResult),
+            GetNativeAppAlgorithmErrorText(pResult->eError),
+            pResult->bPeerCaseKnown ?
+                GetNativeAppAlgorithmErrorText(pResult->ePeerCaseError) :
+                "none",
             GetNativeAppAlgorithmErrorText(pResult->eError),
             GetNativeAppAlgorithmErrorText(pResult->eCleanupError),
             GetNativeAppAlgorithmErrorText(
@@ -876,29 +957,30 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             pResult->Cleanup.bLocalVerified ? "yes" : "no",
             uiConnections, uiIkes,
             uiChildren, uiStates, uiPolicies,
-            (NATIVE_APP_ALGORITHM_RESULT_PASS == pResult->eResult) ?
-            "PASS" : "FAIL");
+            GetReportOverallResult(pResult->eResult));
         (void)fclose(pFile);
     }
     pFile = OpenReportFile(pcCaseDirectory, "ike_result.txt", "w");
     if (NULL != pFile) {
         (void)fprintf(pFile,
             "case_id=%s\nrole=%s\nrequested_proposal=%s\n"
+            "expected_proposal=%s\nsupport_reason=%s\n"
             "established=%s\nnegotiated_proposal=%s\nresult=%s\n",
             pResult->Case.acId, pcRole, pResult->Case.acIkeProposal,
+            pResult->acExpectedIke,
+            ('\0' == pResult->acSupportReason[0]) ? "none" :
+                pResult->acSupportReason,
             pResult->bIkeVerified ? "yes" : "no",
             ('\0' == pResult->acNegotiatedIke[0]) ? "N/A" :
             pResult->acNegotiatedIke,
-            pResult->bIkeVerified ? "PASS" : "FAIL");
+            GetReportPhaseResult(pResult, NATIVE_APP_ALGORITHM_PHASE_IKE));
         (void)fclose(pFile);
     }
     pFile = OpenReportFile(pcCaseDirectory, "esp_result.txt", "w");
     if (NULL != pFile) {
-        bool bEspOverall = pResult->bEspVerified &&
-            pResult->bInstallVerified && pResult->bDataPathVerified;
-
         (void)fprintf(pFile,
             "case_id=%s\nrole=%s\nexchange=%s\nrequested_proposal=%s\n"
+            "expected_proposal=%s\nsupport_reason=%s\n"
             "child_installed=%s\nnegotiated_proposal=%s\n"
             "separate_child_exchange=%s\nexpected_child_ke=%s\n"
             "expect_esn=%s\nexpect_no_esn=%s\nreqid=%" PRIu32
@@ -910,6 +992,9 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             pResult->Case.bSeparateChildExchange ?
             "CREATE_CHILD_SA" : "IKE_AUTH_CHILD_SA",
             pResult->Case.acEspProposal,
+            pResult->acExpectedEsp,
+            ('\0' == pResult->acSupportReason[0]) ? "none" :
+                pResult->acSupportReason,
             pResult->bEspVerified ? "yes" : "no",
             ('\0' == pResult->acNegotiatedEsp[0]) ? "N/A" :
             pResult->acNegotiatedEsp,
@@ -921,40 +1006,61 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             pResult->uiReqid, pResult->uiXfrmStateCount,
             pResult->uiXfrmPolicyCount, pResult->uiTunRouteCount,
             GetReportDatapath(pResult->eDatapathType),
-            pResult->bInstallVerified ? "PASS" : "FAIL",
-            pResult->bDataPathVerified ? "PASS" : "FAIL",
+            GetReportPhaseResult(
+                pResult, NATIVE_APP_ALGORITHM_PHASE_INSTALL),
+            GetReportPhaseResult(
+                pResult, NATIVE_APP_ALGORITHM_PHASE_DATA_PATH),
             ('\0' == pResult->acPeerResult[0]) ? "N/A" :
-            pResult->acPeerResult, bEspOverall ? "PASS" : "FAIL");
+            pResult->acPeerResult,
+            GetReportOverallResult(pResult->eResult));
         (void)fclose(pFile);
     }
     pFile = OpenReportFile(pcCaseDirectory, "application.log", "a");
     if (NULL != pFile) {
         (void)fprintf(pFile,
+            "[INFO] expected IKE: %s\n[INFO] expected ESP: %s\n"
             "[INFO] negotiated IKE: %s\n[INFO] negotiated ESP: %s\n"
+            "[INFO] support reason: %s\n[INFO] peer support reason: %s\n"
+            "[INFO] unsupported side: %s\n"
             "[INFO] reqid=%" PRIu32 " datapath=%s XFRM states=%" PRIu32
             " policies=%" PRIu32 " TUN routes=%" PRIu32
-            "\n[%s] IKE phase=%s\n"
-            "[%s] ESP phase=%s INSTALL=%s DATA_PATH=%s\n"
-            "[%s] result=%s error=%s "
+            " packets=%" PRIu64 "/%" PRIu64
+            " bytes=%" PRIu64 "/%" PRIu64
+            "\n[PHASE] IKE=%s\n"
+            "[PHASE] ESP=%s INSTALL=%s DATA_PATH=%s\n"
+            "[RESULT] overall=%s stage=%s source=%s local_error=%s"
+            " peer_error=%s "
             "cleanup=%s duration=%" PRIu64 " ms\n"
             "[INFO] cleanup stages: terminate=%s wait_removed=%s "
             "remove_connection=%s final_verify=%s peer=%s "
             "attempts=%" PRIu32 "/%" PRIu32 "/%" PRIu32 "/%" PRIu32
             " recovered=%s local_verified=%s\n",
+            pResult->acExpectedIke, pResult->acExpectedEsp,
             pResult->acNegotiatedIke, pResult->acNegotiatedEsp,
+            ('\0' == pResult->acSupportReason[0]) ? "none" :
+                pResult->acSupportReason,
+            ('\0' == pResult->acPeerSupportReason[0]) ? "none" :
+                pResult->acPeerSupportReason,
+            GetNativeAppAlgorithmUnsupportedSideName(
+                pResult->eUnsupportedSide),
             pResult->uiReqid, GetReportDatapath(pResult->eDatapathType),
             pResult->uiXfrmStateCount, pResult->uiXfrmPolicyCount,
             pResult->uiTunRouteCount,
-            pResult->bIkeVerified ? "PASS" : "FAIL",
-            pResult->bIkeVerified ? "PASS" : "FAIL",
-            pResult->bEspVerified ? "PASS" : "FAIL",
-            pResult->bEspVerified ? "PASS" : "FAIL",
-            pResult->bInstallVerified ? "PASS" : "FAIL",
-            pResult->bDataPathVerified ? "PASS" : "FAIL",
-            (NATIVE_APP_ALGORITHM_RESULT_PASS == pResult->eResult) ?
-            "PASS" : "FAIL",
+            pResult->ullPacketsIn, pResult->ullPacketsOut,
+            pResult->ullBytesIn, pResult->ullBytesOut,
+            GetReportPhaseResult(pResult, NATIVE_APP_ALGORITHM_PHASE_IKE),
+            GetReportPhaseResult(pResult, NATIVE_APP_ALGORITHM_PHASE_ESP),
+            GetReportPhaseResult(
+                pResult, NATIVE_APP_ALGORITHM_PHASE_INSTALL),
+            GetReportPhaseResult(
+                pResult, NATIVE_APP_ALGORITHM_PHASE_DATA_PATH),
             GetNativeAppAlgorithmResultName(pResult->eResult),
+            GetNativeAppAlgorithmFailureStageName(pResult->eFailureStage),
+            GetNativeAppAlgorithmErrorSourceName(pResult->eErrorSource),
             GetNativeAppAlgorithmErrorText(pResult->eError),
+            pResult->bPeerCaseKnown ?
+                GetNativeAppAlgorithmErrorText(pResult->ePeerCaseError) :
+                "none",
             GetNativeAppAlgorithmErrorText(pResult->eCleanupError),
             pResult->ullDurationMs,
             GetNativeAppAlgorithmErrorText(
@@ -977,28 +1083,44 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
     pFile = OpenReportFile(pcResultDirectory, "matrix_summary.csv", "a");
     if (NULL != pFile) {
         (void)fprintf(pFile,
-            "%" PRIu32 ",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\","
-            "%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
-            ",\"%s\",\"%s\",\"%s\",\"%s\","
-            "\"%s\",%" PRIu64 ",\"%s\","
-            "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\","
-            "\"%s\",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
+            "%" PRIu32
+            ",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\""
+            ",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\""
+            ",\"%s\",\"%s\",\"%s\",\"%s\""
+            ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
+            ",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\""
+            ",%" PRIu64 ",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\""
+            ",\"%s\",\"%s\""
+            ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
             ",\"%s\",\"%s\"\n",
             pResult->Case.uiNumber, pResult->Case.acId, pcRole,
             pResult->Case.acIkeProposal, pResult->Case.acEspProposal,
+            pResult->acExpectedIke, pResult->acExpectedEsp,
             pResult->acNegotiatedIke, pResult->acNegotiatedEsp,
+            ('\0' == pResult->acSupportReason[0]) ? "none" :
+                pResult->acSupportReason,
+            ('\0' == pResult->acPeerSupportReason[0]) ? "none" :
+                pResult->acPeerSupportReason,
+            GetNativeAppAlgorithmUnsupportedSideName(
+                pResult->eUnsupportedSide),
+            GetNativeAppAlgorithmFailureStageName(pResult->eFailureStage),
+            GetNativeAppAlgorithmErrorSourceName(pResult->eErrorSource),
+            GetNativeAppAlgorithmErrorText(pResult->eError),
+            ('\0' == pResult->acPeerResult[0]) ? "N/A" :
+                pResult->acPeerResult,
+            pResult->bPeerCaseKnown ?
+                GetNativeAppAlgorithmErrorText(pResult->ePeerCaseError) :
+                "none",
             pResult->uiReqid, pResult->uiXfrmStateCount,
             pResult->uiXfrmPolicyCount, pResult->uiTunRouteCount,
             GetReportDatapath(pResult->eDatapathType),
-            pResult->bIkeVerified ? "PASS" : "FAIL",
-            pResult->bEspVerified ? "PASS" : "FAIL",
-            pResult->bInstallVerified ? "PASS" : "FAIL",
-            pResult->bDataPathVerified ? "PASS" : "FAIL",
+            GetReportPhaseResult(pResult, NATIVE_APP_ALGORITHM_PHASE_IKE),
+            GetReportPhaseResult(pResult, NATIVE_APP_ALGORITHM_PHASE_ESP),
+            GetReportPhaseResult(pResult, NATIVE_APP_ALGORITHM_PHASE_INSTALL),
+            GetReportPhaseResult(
+                pResult, NATIVE_APP_ALGORITHM_PHASE_DATA_PATH),
             pResult->ullDurationMs,
-            ('\0' == pResult->acPeerResult[0]) ? "N/A" :
-            pResult->acPeerResult,
             GetNativeAppAlgorithmResultName(pResult->eResult),
-            GetNativeAppAlgorithmErrorText(pResult->eError),
             GetNativeAppAlgorithmErrorText(pResult->eCleanupError),
             GetNativeAppAlgorithmErrorText(
                 pResult->Cleanup.eTerminateError),

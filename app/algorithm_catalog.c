@@ -16,6 +16,11 @@ typedef struct NativeAppKeAlgorithm {
     const char *pcObservedName;
 } NativeAppKeAlgorithm_t;
 
+typedef struct NativeAppAlgorithmName {
+    const char *pcKeyword;
+    const char *pcObservedName;
+} NativeAppAlgorithmName_t;
+
 static const NativeAppBaselineCase_t gaNativeAppBaselineCases[] = {
     {"BASE-001", "aes256-sha256-prfsha256-modp2048", "aes256-sha256", false},
     {"IKE-CBC-128", "aes128-sha256-prfsha256-modp2048", "aes256-sha256", false},
@@ -100,6 +105,49 @@ static const char *const gapcNativeAppAead[] = {
     "aes256gcm16", "chacha20poly1305"
 };
 
+static const NativeAppAlgorithmName_t gaNativeAppEncryptionNames[] = {
+    {"3des", "3DES_CBC"}, {"cast128", "CAST_CBC-128"},
+    {"blowfish128", "BLOWFISH_CBC-128"},
+    {"blowfish192", "BLOWFISH_CBC-192"},
+    {"blowfish256", "BLOWFISH_CBC-256"}, {"null", "NULL"},
+    {"aes128", "AES_CBC-128"}, {"aes192", "AES_CBC-192"},
+    {"aes256", "AES_CBC-256"},
+    {"camellia128", "CAMELLIA_CBC-128"},
+    {"camellia192", "CAMELLIA_CBC-192"},
+    {"camellia256", "CAMELLIA_CBC-256"}
+};
+
+static const NativeAppAlgorithmName_t gaNativeAppAeadNames[] = {
+    {"aes128gcm8", "AES_GCM_8-128"},
+    {"aes192gcm8", "AES_GCM_8-192"},
+    {"aes256gcm8", "AES_GCM_8-256"},
+    {"aes128gcm12", "AES_GCM_12-128"},
+    {"aes192gcm12", "AES_GCM_12-192"},
+    {"aes256gcm12", "AES_GCM_12-256"},
+    {"aes128gcm16", "AES_GCM_16-128"},
+    {"aes192gcm16", "AES_GCM_16-192"},
+    {"aes256gcm16", "AES_GCM_16-256"},
+    {"chacha20poly1305", "CHACHA20_POLY1305"}
+};
+
+static const NativeAppAlgorithmName_t gaNativeAppIntegrityNames[] = {
+    {"md5", "HMAC_MD5_96"}, {"md5_128", "HMAC_MD5_128"},
+    {"sha1", "HMAC_SHA1_96"}, {"sha1_160", "HMAC_SHA1_160"},
+    {"aesxcbc", "AES_XCBC_96"}, {"aescmac", "AES_CMAC_96"},
+    {"sha256", "HMAC_SHA2_256_128"},
+    {"sha384", "HMAC_SHA2_384_192"},
+    {"sha512", "HMAC_SHA2_512_256"}
+};
+
+static const NativeAppAlgorithmName_t gaNativeAppPrfNames[] = {
+    {"prfmd5", "PRF_HMAC_MD5"}, {"prfsha1", "PRF_HMAC_SHA1"},
+    {"prfaesxcbc", "PRF_AES128_XCBC"},
+    {"prfaescmac", "PRF_AES128_CMAC"},
+    {"prfsha256", "PRF_HMAC_SHA2_256"},
+    {"prfsha384", "PRF_HMAC_SHA2_384"},
+    {"prfsha512", "PRF_HMAC_SHA2_512"}
+};
+
 static const NativeAppKeAlgorithm_t gaNativeAppKeAlgorithms[] = {
     {"modp768", "MODP_768"}, {"modp1024", "MODP_1024"},
     {"modp1536", "MODP_1536"}, {"modp2048", "MODP_2048"},
@@ -158,6 +206,275 @@ static bool HasNativeAppAlgorithmToken(
         }
     }
     return false;
+}
+
+static const char *FindNativeAppObservedName(
+    const NativeAppAlgorithmName_t *pNames,
+    uint32_t uiCount,
+    const char *pcKeyword)
+{
+    uint32_t uiIndex;
+
+    if ((NULL == pNames) || (NULL == pcKeyword)) {
+        return NULL;
+    }
+    for (uiIndex = 0U; uiIndex < uiCount; uiIndex++) {
+        if (0 == strcmp(pcKeyword, pNames[uiIndex].pcKeyword)) {
+            return pNames[uiIndex].pcObservedName;
+        }
+        else {
+            /* Check the next algorithm keyword. */
+        }
+    }
+    return NULL;
+}
+
+static const char *FindNativeAppKeObservedName(const char *pcKeyword)
+{
+    uint32_t uiIndex;
+
+    if (NULL == pcKeyword) {
+        return NULL;
+    }
+    for (uiIndex = 0U;
+         uiIndex < NATIVE_APP_ARRAY_COUNT(gaNativeAppKeAlgorithms);
+         uiIndex++) {
+        if (0 == strcmp(pcKeyword,
+                        gaNativeAppKeAlgorithms[uiIndex].pcKeyword)) {
+            return gaNativeAppKeAlgorithms[uiIndex].pcObservedName;
+        }
+        else {
+            /* Check the next key exchange keyword. */
+        }
+    }
+    return NULL;
+}
+
+static IpsecError_t AppendNativeAppObservedName(
+    char *pcOutput,
+    size_t zOutputLength,
+    const char *pcObservedName)
+{
+    size_t zUsed;
+    int32_t iLength;
+
+    if ((NULL == pcOutput) || (0U == zOutputLength) ||
+        (NULL == pcObservedName)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    zUsed = strnlen(pcOutput, zOutputLength);
+    if (zOutputLength <= zUsed) {
+        return IPSEC_ERR_BUFFER_TOO_SMALL;
+    }
+    iLength = snprintf(pcOutput + zUsed, zOutputLength - zUsed,
+                       "%s%s", (0U == zUsed) ? "" : "/",
+                       pcObservedName);
+    return ((0 <= iLength) &&
+            ((size_t)iLength < (zOutputLength - zUsed))) ?
+        IPSEC_OK : IPSEC_ERR_BUFFER_TOO_SMALL;
+}
+
+static IpsecError_t SplitNativeAppProposal(
+    const char *pcProposal,
+    char *pcCopy,
+    size_t zCopyLength,
+    char **ppcTokens,
+    uint32_t uiTokenCapacity,
+    uint32_t *puiTokenCount)
+{
+    char *pcState = NULL;
+    char *pcToken;
+    uint32_t uiCount = 0U;
+    int32_t iLength;
+
+    if ((NULL == pcProposal) || (NULL == pcCopy) ||
+        (0U == zCopyLength) || (NULL == ppcTokens) ||
+        (0U == uiTokenCapacity) || (NULL == puiTokenCount)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    iLength = snprintf(pcCopy, zCopyLength, "%s", pcProposal);
+    if ((0 > iLength) || ((size_t)iLength >= zCopyLength)) {
+        return IPSEC_ERR_BUFFER_TOO_SMALL;
+    }
+    pcToken = strtok_r(pcCopy, "-", &pcState);
+    while ((NULL != pcToken) && (uiCount < uiTokenCapacity)) {
+        ppcTokens[uiCount] = pcToken;
+        uiCount++;
+        pcToken = strtok_r(NULL, "-", &pcState);
+    }
+    if ((NULL != pcToken) || (0U == uiCount)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    else {
+        *puiTokenCount = uiCount;
+        return IPSEC_OK;
+    }
+}
+
+static IpsecError_t BuildNativeAppExpectedIkeProposal(
+    const char *pcProposal,
+    char *pcExpected,
+    size_t zExpectedLength)
+{
+    char acCopy[IPSEC_PROPOSAL_LENGTH];
+    char *pacTokens[5];
+    const char *pcEncryption;
+    const char *pcIntegrity = NULL;
+    const char *pcPrf;
+    const char *pcKe;
+    uint32_t uiTokenCount = 0U;
+    bool bAead;
+    IpsecError_t eError;
+
+    eError = SplitNativeAppProposal(pcProposal, acCopy, sizeof(acCopy),
+                                    pacTokens, NATIVE_APP_ARRAY_COUNT(pacTokens),
+                                    &uiTokenCount);
+    if (IPSEC_OK != eError) {
+        return eError;
+    }
+    pcEncryption = FindNativeAppObservedName(
+        gaNativeAppAeadNames,
+        NATIVE_APP_ARRAY_COUNT(gaNativeAppAeadNames), pacTokens[0]);
+    bAead = (NULL != pcEncryption);
+    if (!bAead) {
+        pcEncryption = FindNativeAppObservedName(
+            gaNativeAppEncryptionNames,
+            NATIVE_APP_ARRAY_COUNT(gaNativeAppEncryptionNames), pacTokens[0]);
+    }
+    if ((bAead && (3U != uiTokenCount)) ||
+        (!bAead && (4U != uiTokenCount)) || (NULL == pcEncryption)) {
+        return IPSEC_ERR_NOT_SUPPORTED;
+    }
+    if (bAead) {
+        pcPrf = FindNativeAppObservedName(
+            gaNativeAppPrfNames, NATIVE_APP_ARRAY_COUNT(gaNativeAppPrfNames),
+            pacTokens[1]);
+        pcKe = FindNativeAppKeObservedName(pacTokens[2]);
+    }
+    else {
+        pcIntegrity = FindNativeAppObservedName(
+            gaNativeAppIntegrityNames,
+            NATIVE_APP_ARRAY_COUNT(gaNativeAppIntegrityNames), pacTokens[1]);
+        pcPrf = FindNativeAppObservedName(
+            gaNativeAppPrfNames, NATIVE_APP_ARRAY_COUNT(gaNativeAppPrfNames),
+            pacTokens[2]);
+        pcKe = FindNativeAppKeObservedName(pacTokens[3]);
+    }
+    if ((NULL == pcPrf) || (NULL == pcKe) ||
+        (!bAead && (NULL == pcIntegrity))) {
+        return IPSEC_ERR_NOT_SUPPORTED;
+    }
+    pcExpected[0] = '\0';
+    eError = AppendNativeAppObservedName(pcExpected, zExpectedLength,
+                                         pcEncryption);
+    if ((IPSEC_OK == eError) && !bAead) {
+        eError = AppendNativeAppObservedName(pcExpected, zExpectedLength,
+                                             pcIntegrity);
+    }
+    if (IPSEC_OK == eError) {
+        eError = AppendNativeAppObservedName(pcExpected, zExpectedLength,
+                                             pcPrf);
+    }
+    if (IPSEC_OK == eError) {
+        eError = AppendNativeAppObservedName(pcExpected, zExpectedLength,
+                                             pcKe);
+    }
+    return eError;
+}
+
+static IpsecError_t BuildNativeAppExpectedEspProposal(
+    const char *pcProposal,
+    char *pcExpected,
+    size_t zExpectedLength)
+{
+    char acCopy[IPSEC_PROPOSAL_LENGTH];
+    char *pacTokens[5];
+    const char *pcEncryption;
+    const char *pcIntegrity = NULL;
+    uint32_t uiTokenCount = 0U;
+    uint32_t uiIndex;
+    bool bAead;
+    IpsecError_t eError;
+
+    eError = SplitNativeAppProposal(pcProposal, acCopy, sizeof(acCopy),
+                                    pacTokens, NATIVE_APP_ARRAY_COUNT(pacTokens),
+                                    &uiTokenCount);
+    if (IPSEC_OK != eError) {
+        return eError;
+    }
+    pcEncryption = FindNativeAppObservedName(
+        gaNativeAppAeadNames,
+        NATIVE_APP_ARRAY_COUNT(gaNativeAppAeadNames), pacTokens[0]);
+    bAead = (NULL != pcEncryption);
+    if (!bAead) {
+        pcEncryption = FindNativeAppObservedName(
+            gaNativeAppEncryptionNames,
+            NATIVE_APP_ARRAY_COUNT(gaNativeAppEncryptionNames), pacTokens[0]);
+    }
+    if ((NULL == pcEncryption) || (!bAead && (2U > uiTokenCount))) {
+        return IPSEC_ERR_NOT_SUPPORTED;
+    }
+    if (!bAead) {
+        pcIntegrity = FindNativeAppObservedName(
+            gaNativeAppIntegrityNames,
+            NATIVE_APP_ARRAY_COUNT(gaNativeAppIntegrityNames), pacTokens[1]);
+        if (NULL == pcIntegrity) {
+            return IPSEC_ERR_NOT_SUPPORTED;
+        }
+    }
+    pcExpected[0] = '\0';
+    eError = AppendNativeAppObservedName(pcExpected, zExpectedLength,
+                                         pcEncryption);
+    if ((IPSEC_OK == eError) && !bAead) {
+        eError = AppendNativeAppObservedName(pcExpected, zExpectedLength,
+                                             pcIntegrity);
+    }
+    for (uiIndex = bAead ? 1U : 2U;
+         (IPSEC_OK == eError) && (uiIndex < uiTokenCount);
+         uiIndex++) {
+        const char *pcKe;
+
+        if ((0 == strcmp("esn", pacTokens[uiIndex])) ||
+            (0 == strcmp("noesn", pacTokens[uiIndex]))) {
+            /* ESN is reported separately from the proposal text. */
+            continue;
+        }
+        pcKe = FindNativeAppKeObservedName(pacTokens[uiIndex]);
+        if (NULL == pcKe) {
+            eError = IPSEC_ERR_NOT_SUPPORTED;
+        }
+        else {
+            eError = AppendNativeAppObservedName(
+                pcExpected, zExpectedLength, pcKe);
+        }
+    }
+    return eError;
+}
+
+IpsecError_t BuildNativeAppExpectedProposals(
+    const NativeAppAlgorithmCase_t *pCase,
+    char *pcExpectedIke,
+    size_t zExpectedIkeLength,
+    char *pcExpectedEsp,
+    size_t zExpectedEspLength)
+{
+    IpsecError_t eError;
+
+    if ((NULL == pCase) || (NULL == pcExpectedIke) ||
+        (0U == zExpectedIkeLength) || (NULL == pcExpectedEsp) ||
+        (0U == zExpectedEspLength)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    eError = BuildNativeAppExpectedIkeProposal(
+        pCase->acIkeProposal, pcExpectedIke, zExpectedIkeLength);
+    if (IPSEC_OK == eError) {
+        eError = BuildNativeAppExpectedEspProposal(
+            pCase->acEspProposal, pcExpectedEsp, zExpectedEspLength);
+    }
+    else {
+        /* Preserve the IKE proposal conversion error. */
+    }
+    return eError;
 }
 
 const char *GetNativeAppAlgorithmErrorText(IpsecError_t eError)
