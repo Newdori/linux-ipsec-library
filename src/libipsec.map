@@ -9,6 +9,7 @@ IPSEC_0.1 {
         GetIpsecConnections;
         FreeIpsecConnectionList;
         AddIpsecPsk;
+        RemoveIpsecPsk;
         ClearIpsecCredentials;
         InitiateIpsecIke;
         TerminateIpsecIke;

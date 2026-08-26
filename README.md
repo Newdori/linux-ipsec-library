@@ -180,7 +180,9 @@ child rekey
 child wait
 ike rekey
 ike wait
+down
 test loop --count 10 --delay-ms 1000
+up
 show summary detail
 ```
 
@@ -190,6 +192,14 @@ requires the active `ipsec0` interface and a route through that interface.
 Because the TUN device is shared by the daemon, cleanup waits for the test IKE
 and CHILD objects to disappear and does not require `ipsec0` itself to be
 removed.
+
+The loop owns every connection and SA it creates, so it rejects a selected
+peer that still has a loaded connection, established IKE SA, or installed
+CHILD SA. Run `down` first. Credentials are retained by default. Use
+`--unload-credential` only to unload the selected peer PSK after the loop.
+`credential clear all` is deliberately explicit because it removes every
+credential loaded through VICI and must not be used during normal 1:N
+operation.
 
 For one automated ESP acceptance case, leave the responder waiting with:
 

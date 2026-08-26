@@ -32,7 +32,15 @@ static void SetNativeAppError(
     const char *pcValue)
 {
     if ((NULL != pcError) && (0U < uiErrorLength)) {
-        (void)snprintf(pcError, uiErrorLength, pcFormat, pcValue);
+        int32_t iLength = snprintf(pcError, uiErrorLength, pcFormat,
+                                   pcValue);
+
+        if ((0 > iLength) || ((uint32_t)iLength >= uiErrorLength)) {
+            pcError[uiErrorLength - 1U] = '\0';
+        }
+        else {
+            /* The complete diagnostic text was stored. */
+        }
     }
     else {
         /* The caller did not request diagnostic text. */
@@ -44,13 +52,13 @@ static bool CopyNativeAppText(
     uint32_t uiDestinationLength,
     const char *pcSource)
 {
-    size_t ulLength = strnlen(pcSource, uiDestinationLength);
+    size_t zLength = strnlen(pcSource, uiDestinationLength);
 
-    if (ulLength >= uiDestinationLength) {
+    if (zLength >= uiDestinationLength) {
         return false;
     }
     else {
-        (void)memcpy(pcDestination, pcSource, ulLength + 1U);
+        (void)memcpy(pcDestination, pcSource, zLength + 1U);
         return true;
     }
 }
@@ -611,11 +619,11 @@ IpsecError_t LoadNativeAppConfig(
         char *pcKey;
         char *pcValue;
         char *pcSeparator;
-        size_t ulLength;
+        size_t zLength;
 
         uiLine++;
-        ulLength = strlen(acLine);
-        if ((0U < ulLength) && ('\n' != acLine[ulLength - 1U]) &&
+        zLength = strlen(acLine);
+        if ((0U < zLength) && ('\n' != acLine[zLength - 1U]) &&
             (0 == feof(pFile))) {
             eError = IPSEC_ERR_BUFFER_TOO_SMALL;
             SetNativeAppError(pcError, uiErrorLength,
@@ -698,7 +706,7 @@ static IpsecError_t SplitNativeAppProposals(
 
     while ('\0' != *pcStart) {
         const char *pcEnd = strchr(pcStart, ',');
-        size_t ulLength;
+        size_t zLength;
 
         if (NULL == pcEnd) {
             pcEnd = pcStart + strlen(pcStart);
@@ -713,14 +721,14 @@ static IpsecError_t SplitNativeAppProposals(
         while (0 != isspace((unsigned char)*pcStart)) {
             pcStart++;
         }
-        ulLength = (size_t)(pcEnd - pcStart);
-        if ((0U == ulLength) || (uiCount >= NATIVE_APP_PROPOSAL_COUNT) ||
-            (ulLength >= IPSEC_PROPOSAL_LENGTH)) {
+        zLength = (size_t)(pcEnd - pcStart);
+        if ((0U == zLength) || (uiCount >= NATIVE_APP_PROPOSAL_COUNT) ||
+            (zLength >= IPSEC_PROPOSAL_LENGTH)) {
             return IPSEC_ERR_INVALID_ARGUMENT;
         }
         else {
-            (void)memcpy(aacItems[uiCount], pcStart, ulLength);
-            aacItems[uiCount][ulLength] = '\0';
+            (void)memcpy(aacItems[uiCount], pcStart, zLength);
+            aacItems[uiCount][zLength] = '\0';
             pacItems[uiCount] = aacItems[uiCount];
             uiCount++;
         }
@@ -748,11 +756,11 @@ static bool HasNativeAppProposalToken(
          uiIndex++) {
         const char *pcProposal = pRuntime->pacEspProposals[uiIndex];
         const char *pcPosition = pcProposal;
-        size_t ulTokenLength = strlen(pcToken);
+        size_t zTokenLength = strlen(pcToken);
 
         while (NULL != (pcPosition = strstr(pcPosition, pcToken))) {
             bool bLeft = (pcPosition == pcProposal) || ('-' == pcPosition[-1]);
-            char cRight = pcPosition[ulTokenLength];
+            char cRight = pcPosition[zTokenLength];
             bool bRight = ('\0' == cRight) || ('-' == cRight);
 
             if (bLeft && bRight) {
@@ -760,7 +768,7 @@ static bool HasNativeAppProposalToken(
                 break;
             }
             else {
-                pcPosition += ulTokenLength;
+                pcPosition += zTokenLength;
             }
         }
     }
@@ -779,14 +787,14 @@ static bool HasNativeAppPfsToken(const NativeAppRuntimeConfig_t *pRuntime)
 
         while ('\0' != *pcCursor) {
             const char *pcEnd = strchr(pcCursor, '-');
-            size_t ulLength = (NULL == pcEnd) ? strlen(pcCursor) :
+            size_t zLength = (NULL == pcEnd) ? strlen(pcCursor) :
                 (size_t)(pcEnd - pcCursor);
 
-            bFound = ((4U <= ulLength) &&
+            bFound = ((4U <= zLength) &&
                       (0 == memcmp("modp", pcCursor, 4U))) ||
-                     ((3U <= ulLength) &&
+                     ((3U <= zLength) &&
                       (0 == memcmp("ecp", pcCursor, 3U))) ||
-                     ((5U <= ulLength) &&
+                     ((5U <= zLength) &&
                       (0 == memcmp("curve", pcCursor, 5U)));
             if (NULL == pcEnd) {
                 break;
@@ -797,6 +805,32 @@ static bool HasNativeAppPfsToken(const NativeAppRuntimeConfig_t *pRuntime)
         }
     }
     return bFound;
+}
+
+static IpsecError_t BuildNativeAppTrafficSelector(
+    const char *pcAddress,
+    bool bIpv4,
+    char *pcSelector,
+    uint32_t uiSelectorLength)
+{
+    const char *pcPrefix = bIpv4 ? "/32" : "/128";
+    int32_t iLength;
+
+    if ((NULL == pcAddress) || (NULL == pcSelector) ||
+        (0U == uiSelectorLength)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    else {
+        iLength = snprintf(pcSelector, uiSelectorLength, "%s%s", pcAddress,
+                           pcPrefix);
+    }
+    if ((0 > iLength) || ((uint32_t)iLength >= uiSelectorLength)) {
+        pcSelector[uiSelectorLength - 1U] = '\0';
+        return IPSEC_ERR_BUFFER_TOO_SMALL;
+    }
+    else {
+        return IPSEC_OK;
+    }
 }
 
 IpsecError_t BuildNativeAppRuntimeConfig(
@@ -816,25 +850,29 @@ IpsecError_t BuildNativeAppRuntimeConfig(
     else {
         (void)memset(pRuntime, 0, sizeof(*pRuntime));
     }
-    if (1 == inet_pton(AF_INET, pConfig->acLocalAddress, aucAddress)) {
-        (void)snprintf(pRuntime->acLocalTrafficSelector,
-                       sizeof(pRuntime->acLocalTrafficSelector), "%s/32",
-                       pConfig->acLocalAddress);
+    eError = BuildNativeAppTrafficSelector(
+        pConfig->acLocalAddress,
+        (1 == inet_pton(AF_INET, pConfig->acLocalAddress, aucAddress)),
+        pRuntime->acLocalTrafficSelector,
+        sizeof(pRuntime->acLocalTrafficSelector));
+    if (IPSEC_OK == eError) {
+        eError = BuildNativeAppTrafficSelector(
+            pConfig->acRemoteAddress,
+            (1 == inet_pton(AF_INET, pConfig->acRemoteAddress, aucAddress)),
+            pRuntime->acRemoteTrafficSelector,
+            sizeof(pRuntime->acRemoteTrafficSelector));
     }
     else {
-        (void)snprintf(pRuntime->acLocalTrafficSelector,
-                       sizeof(pRuntime->acLocalTrafficSelector), "%s/128",
-                       pConfig->acLocalAddress);
+        /* Report the local traffic-selector error below. */
     }
-    if (1 == inet_pton(AF_INET, pConfig->acRemoteAddress, aucAddress)) {
-        (void)snprintf(pRuntime->acRemoteTrafficSelector,
-                       sizeof(pRuntime->acRemoteTrafficSelector), "%s/32",
-                       pConfig->acRemoteAddress);
+    if (IPSEC_OK != eError) {
+        SetNativeAppError(pcError, uiErrorLength,
+                          "traffic selector is too long: %s",
+                          pConfig->acConnectionName);
+        return eError;
     }
     else {
-        (void)snprintf(pRuntime->acRemoteTrafficSelector,
-                       sizeof(pRuntime->acRemoteTrafficSelector), "%s/128",
-                       pConfig->acRemoteAddress);
+        /* Both bounded traffic selectors are ready. */
     }
 
     eError = SplitNativeAppProposals(pConfig->acIkeProposals,
@@ -910,7 +948,7 @@ IpsecError_t ReadNativeAppSecret(
     NativeAppSecret_t *pSecret)
 {
     FILE *pFile;
-    size_t ulRead;
+    size_t zRead;
 
     if ((NULL == pConfig) || (NULL == pSecret)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
@@ -933,8 +971,8 @@ IpsecError_t ReadNativeAppSecret(
     else {
         /* The extra byte detects oversized input. */
     }
-    ulRead = fread(pSecret->pucData, 1U, NATIVE_APP_PSK_MAX_LENGTH + 1U,
-                   pFile);
+    zRead = fread(pSecret->pucData, 1U, NATIVE_APP_PSK_MAX_LENGTH + 1U,
+                  pFile);
     if (0 != ferror(pFile)) {
         (void)fclose(pFile);
         DestroyNativeAppSecret(pSecret);
@@ -943,23 +981,23 @@ IpsecError_t ReadNativeAppSecret(
     else {
         (void)fclose(pFile);
     }
-    if ((0U == ulRead) || (ulRead > NATIVE_APP_PSK_MAX_LENGTH)) {
+    if ((0U == zRead) || (zRead > NATIVE_APP_PSK_MAX_LENGTH)) {
         DestroyNativeAppSecret(pSecret);
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     else {
-        while ((0U < ulRead) &&
-               (('\n' == pSecret->pucData[ulRead - 1U]) ||
-                ('\r' == pSecret->pucData[ulRead - 1U]))) {
-            ulRead--;
+        while ((0U < zRead) &&
+               (('\n' == pSecret->pucData[zRead - 1U]) ||
+                ('\r' == pSecret->pucData[zRead - 1U]))) {
+            zRead--;
         }
     }
-    if (0U == ulRead) {
+    if (0U == zRead) {
         DestroyNativeAppSecret(pSecret);
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     else {
-        pSecret->uiLength = (uint32_t)ulRead;
+        pSecret->uiLength = (uint32_t)zRead;
         return IPSEC_OK;
     }
 }

@@ -20,7 +20,14 @@ static void SetNativeAppPeerError(
     const char *pcText)
 {
     if ((NULL != pcError) && (0U < uiErrorLength)) {
-        (void)snprintf(pcError, uiErrorLength, "%s", pcText);
+        int32_t iLength = snprintf(pcError, uiErrorLength, "%s", pcText);
+
+        if ((0 > iLength) || ((uint32_t)iLength >= uiErrorLength)) {
+            pcError[uiErrorLength - 1U] = '\0';
+        }
+        else {
+            /* The complete diagnostic text was stored. */
+        }
     }
     else {
         /* The caller did not request diagnostic text. */
@@ -344,7 +351,9 @@ static IpsecError_t BuildNativeAppPeerConfig(
     (void)memset(pPeer, 0, sizeof(*pPeer));
     pPeer->uiGroupId = uiGroupId;
     pPeer->uiLogonId = uiLogonId;
+    pPeer->uiRegistrationCount = 1U;
     pPeer->Config = *pBaseConfig;
+    pPeer->eState = NATIVE_APP_PEER_STATE_REGISTERED;
     if (!BuildNativeAppPeerId(acPeerId, sizeof(acPeerId), uiGroupId,
                               uiLogonId) ||
         !CopyNativeAppPeerText(pPeer->Config.acLocalAddress,
@@ -392,15 +401,111 @@ static IpsecError_t AllocateNativeAppPeerIds(
     return eError;
 }
 
-static IpsecError_t AppendNativeAppPeer(
-    NativeAppPeerTable_t *pTable,
-    const NativeAppPeer_t *pPeer,
-    NativeAppPeer_t **ppPeer)
+static int32_t FindNativeAppPeerByRemoteAddressLocked(
+    const NativeAppPeerTable_t *pTable,
+    const char *pcRemoteAddress)
 {
-    IpsecError_t eError;
+    uint32_t uiIndex;
+
+    for (uiIndex = 0U; uiIndex < pTable->uiCount; uiIndex++) {
+        if (0 == strcmp(pcRemoteAddress,
+                        pTable->aPeers[uiIndex].Config.acRemoteAddress)) {
+            return (int32_t)uiIndex;
+        }
+        else {
+            /* Check the next registered endpoint. */
+        }
+    }
+    return -1;
+}
+
+static bool CopyNativeAppPeerByRemoteAddress(
+    NativeAppPeerTable_t *pTable,
+    const char *pcRemoteAddress,
+    NativeAppPeer_t *pPeer)
+{
+    int32_t iIndex;
+    bool bFound = false;
 
     LockNativeAppPeerTable(pTable);
-    if (pTable->uiCount >= NATIVE_APP_PEER_CAPACITY) {
+    iIndex = FindNativeAppPeerByRemoteAddressLocked(pTable, pcRemoteAddress);
+    if (0 <= iIndex) {
+        *pPeer = pTable->aPeers[(uint32_t)iIndex];
+        bFound = true;
+    }
+    else {
+        /* This endpoint has not registered before. */
+    }
+    UnlockNativeAppPeerTable(pTable);
+    return bFound;
+}
+
+IpsecError_t UpsertNativeAppPeer(
+    NativeAppPeerTable_t *pTable,
+    const NativeAppPeer_t *pPeer,
+    NativeAppPeer_t *pStoredPeer)
+{
+    int32_t iExistingIndex;
+    IpsecError_t eError;
+
+    if ((NULL == pTable) || (NULL == pPeer) || (NULL == pStoredPeer) ||
+        ('\0' == pPeer->Config.acRemoteAddress[0])) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    else {
+        (void)memset(pStoredPeer, 0, sizeof(*pStoredPeer));
+    }
+    LockNativeAppPeerTable(pTable);
+    iExistingIndex = FindNativeAppPeerByRemoteAddressLocked(
+        pTable, pPeer->Config.acRemoteAddress);
+    if (0 <= iExistingIndex) {
+        NativeAppPeer_t *pExisting =
+            &pTable->aPeers[(uint32_t)iExistingIndex];
+        bool bSameResourceNames =
+            (0 == strcmp(pExisting->Config.acConnectionName,
+                         pPeer->Config.acConnectionName)) &&
+            (0 == strcmp(pExisting->Config.acChildName,
+                         pPeer->Config.acChildName)) &&
+            (0 == strcmp(pExisting->Config.acCredentialId,
+                         pPeer->Config.acCredentialId));
+
+        if (!bSameResourceNames &&
+            (pExisting->bConnectionLoaded || pExisting->bIkeEstablished ||
+             pExisting->bChildInstalled)) {
+            eError = IPSEC_ERR_INVALID_ARGUMENT;
+        }
+        else if (UINT32_MAX == pExisting->uiRegistrationCount) {
+            eError = IPSEC_ERR_INTERNAL;
+        }
+        else {
+            NativeAppPeer_t UpdatedPeer = *pPeer;
+
+            UpdatedPeer.uiRegistrationCount =
+                pExisting->uiRegistrationCount + 1U;
+            if (bSameResourceNames) {
+                (void)CopyNativeAppPeerText(
+                    UpdatedPeer.Config.acPskFile,
+                    sizeof(UpdatedPeer.Config.acPskFile),
+                    pExisting->Config.acPskFile);
+                UpdatedPeer.eState = pExisting->eState;
+                UpdatedPeer.bConnectionLoaded =
+                    pExisting->bConnectionLoaded;
+                UpdatedPeer.bCredentialLoaded =
+                    pExisting->bCredentialLoaded;
+                UpdatedPeer.bIkeEstablished =
+                    pExisting->bIkeEstablished;
+                UpdatedPeer.bChildInstalled =
+                    pExisting->bChildInstalled;
+            }
+            else {
+                /* A clean endpoint may accept a new controller assignment. */
+            }
+            *pExisting = UpdatedPeer;
+            *pStoredPeer = *pExisting;
+            eError = IPSEC_OK;
+        }
+    }
+    else if (pTable->uiCount >= NATIVE_APP_PEER_CAPACITY) {
         eError = IPSEC_ERR_BUFFER_TOO_SMALL;
     }
     else if ((NATIVE_APP_ROLE_INITIATOR == pPeer->Config.eRole) &&
@@ -412,7 +517,7 @@ static IpsecError_t AppendNativeAppPeer(
     }
     else {
         pTable->aPeers[pTable->uiCount] = *pPeer;
-        *ppPeer = &pTable->aPeers[pTable->uiCount];
+        *pStoredPeer = pTable->aPeers[pTable->uiCount];
         pTable->uiCount++;
         eError = IPSEC_OK;
     }
@@ -596,18 +701,19 @@ void UnlockNativeAppPeerTable(NativeAppPeerTable_t *pTable)
     }
 }
 
-NativeAppPeer_t *FindNativeAppPeer(
+IpsecError_t SelectNativeAppPeerRecord(
     NativeAppPeerTable_t *pTable,
-    const char *pcPeerId)
+    const char *pcPeerId,
+    NativeAppPeer_t *pPeer)
 {
     uint32_t uiIndex;
-    NativeAppPeer_t *pPeer = NULL;
+    IpsecError_t eError = IPSEC_ERR_CONNECTION_NOT_FOUND;
 
-    if ((NULL == pTable) || (NULL == pcPeerId)) {
-        return NULL;
+    if ((NULL == pTable) || (NULL == pcPeerId) || (NULL == pPeer)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
     }
     else {
-        /* Search the active in-memory table. */
+        (void)memset(pPeer, 0, sizeof(*pPeer));
     }
     LockNativeAppPeerTable(pTable);
     for (uiIndex = 0U; uiIndex < pTable->uiCount; uiIndex++) {
@@ -621,7 +727,9 @@ NativeAppPeer_t *FindNativeAppPeer(
             /* Initiators identify a peer by its remote IKE identity. */
         }
         if (0 == strcmp(pcPeerId, pcCurrentId)) {
-            pPeer = &pTable->aPeers[uiIndex];
+            pTable->uiSelectedIndex = uiIndex;
+            *pPeer = pTable->aPeers[uiIndex];
+            eError = IPSEC_OK;
             break;
         }
         else {
@@ -629,14 +737,14 @@ NativeAppPeer_t *FindNativeAppPeer(
         }
     }
     UnlockNativeAppPeerTable(pTable);
-    return pPeer;
+    return eError;
 }
 
 static IpsecError_t AcceptNativeAppPeerConnection(
     int32_t iServerSocket,
     const NativeAppConfig_t *pBaseConfig,
     NativeAppPeerTable_t *pTable,
-    NativeAppPeer_t **ppPeer,
+    NativeAppPeer_t *pPeer,
     char *pcError,
     uint32_t uiErrorLength)
 {
@@ -652,11 +760,12 @@ static IpsecError_t AcceptNativeAppPeerConnection(
     char *pcExtra;
     uint32_t uiGroupId = 0U;
     uint32_t uiLogonId = 0U;
+    bool bExistingPeer = false;
     int32_t iPeerSocket = -1;
     int32_t iLength;
     IpsecError_t eError;
 
-    if ((NULL == pBaseConfig) || (NULL == pTable) || (NULL == ppPeer) ||
+    if ((NULL == pBaseConfig) || (NULL == pTable) || (NULL == pPeer) ||
         (0 > iServerSocket) ||
         (NATIVE_APP_ROLE_INITIATOR != pBaseConfig->eRole) ||
         !IsNativeAppPeerToken(pBaseConfig->acLocalId) ||
@@ -665,7 +774,7 @@ static IpsecError_t AcceptNativeAppPeerConnection(
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     else {
-        *ppPeer = NULL;
+        (void)memset(pPeer, 0, sizeof(*pPeer));
     }
     iPeerSocket = (int32_t)accept(
         iServerSocket, (struct sockaddr *)&RemoteSocketAddress,
@@ -708,11 +817,20 @@ static IpsecError_t AcceptNativeAppPeerConnection(
             eError = IPSEC_ERR_INVALID_ARGUMENT;
         }
         else {
-            eError = AllocateNativeAppPeerIds(pTable, &uiGroupId,
-                                               &uiLogonId);
+            bExistingPeer = CopyNativeAppPeerByRemoteAddress(
+                pTable, pcRemoteAddress, &Peer);
+            if (bExistingPeer) {
+                uiGroupId = Peer.uiGroupId;
+                uiLogonId = Peer.uiLogonId;
+                eError = IPSEC_OK;
+            }
+            else {
+                eError = AllocateNativeAppPeerIds(pTable, &uiGroupId,
+                                                   &uiLogonId);
+            }
         }
     }
-    if (IPSEC_OK == eError) {
+    if ((IPSEC_OK == eError) && !bExistingPeer) {
         char acPeerId[IPSEC_ID_LENGTH];
 
         if (!BuildNativeAppPeerId(acPeerId, sizeof(acPeerId), uiGroupId,
@@ -727,16 +845,18 @@ static IpsecError_t AcceptNativeAppPeerConnection(
         }
     }
     if (IPSEC_OK == eError) {
-        const char *pcMode = (IPSEC_MODE_TRANSPORT == pBaseConfig->eMode) ?
+        const NativeAppConfig_t *pAssignedConfig = &Peer.Config;
+        const char *pcMode =
+            (IPSEC_MODE_TRANSPORT == pAssignedConfig->eMode) ?
             "transport" : "tunnel";
 
         iLength = snprintf(
             acMessage, sizeof(acMessage),
             NATIVE_APP_PEER_PROTOCOL " ASSIGN %" PRIu32 " %" PRIu32
             " %s %s %s %s %s\n",
-            uiGroupId, uiLogonId, pBaseConfig->acLocalAddress,
-            pBaseConfig->acLocalId, pBaseConfig->acIkeProposals,
-            pBaseConfig->acEspProposals, pcMode);
+            uiGroupId, uiLogonId, pAssignedConfig->acLocalAddress,
+            pAssignedConfig->acLocalId, pAssignedConfig->acIkeProposals,
+            pAssignedConfig->acEspProposals, pcMode);
         if ((0 > iLength) || ((uint32_t)iLength >= sizeof(acMessage))) {
             eError = IPSEC_ERR_BUFFER_TOO_SMALL;
         }
@@ -746,7 +866,7 @@ static IpsecError_t AcceptNativeAppPeerConnection(
         }
     }
     if (IPSEC_OK == eError) {
-        eError = AppendNativeAppPeer(pTable, &Peer, ppPeer);
+        eError = UpsertNativeAppPeer(pTable, &Peer, pPeer);
     }
     if (0 <= iPeerSocket) {
         (void)close(iPeerSocket);
@@ -760,14 +880,14 @@ static IpsecError_t AcceptNativeAppPeerConnection(
 IpsecError_t AcceptNativeAppPeer(
     const NativeAppConfig_t *pBaseConfig,
     NativeAppPeerTable_t *pTable,
-    NativeAppPeer_t **ppPeer,
+    NativeAppPeer_t *pPeer,
     char *pcError,
     uint32_t uiErrorLength)
 {
     int32_t iServerSocket;
     IpsecError_t eError;
 
-    if ((NULL == pBaseConfig) || (NULL == pTable) || (NULL == ppPeer)) {
+    if ((NULL == pBaseConfig) || (NULL == pTable) || (NULL == pPeer)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     else {
@@ -784,7 +904,7 @@ IpsecError_t AcceptNativeAppPeer(
     }
     if (IPSEC_OK == eError) {
         eError = AcceptNativeAppPeerConnection(
-            iServerSocket, pBaseConfig, pTable, ppPeer, pcError,
+            iServerSocket, pBaseConfig, pTable, pPeer, pcError,
             uiErrorLength);
     }
     else {
@@ -815,7 +935,7 @@ static void *RunNativeAppPeerListener(void *pvArgument)
         (NativeAppPeerListener_t *)pvArgument;
 
     while (!atomic_load(&pListener->bStopRequested)) {
-        NativeAppPeer_t *pPeer = NULL;
+        NativeAppPeer_t Peer;
         char acError[NATIVE_APP_ERROR_TEXT_LENGTH] = {0};
         IpsecError_t eError = WaitNativeAppSocket(
             pListener->iServerSocket, POLLIN,
@@ -828,13 +948,15 @@ static void *RunNativeAppPeerListener(void *pvArgument)
         else if (IPSEC_OK == eError) {
             eError = AcceptNativeAppPeerConnection(
                 pListener->iServerSocket, &pListener->Config,
-                pListener->pTable, &pPeer, acError, sizeof(acError));
+                pListener->pTable, &Peer, acError, sizeof(acError));
         }
         else {
             NotifyNativeAppPeerListener(pListener, eError, NULL, acError);
             break;
         }
-        NotifyNativeAppPeerListener(pListener, eError, pPeer, acError);
+        NotifyNativeAppPeerListener(
+            pListener, eError, (IPSEC_OK == eError) ? &Peer : NULL,
+            acError);
     }
     (void)close(pListener->iServerSocket);
     pListener->iServerSocket = -1;
@@ -909,7 +1031,7 @@ bool IsNativeAppPeerListenerRunning(
 IpsecError_t RegisterNativeAppPeer(
     const NativeAppConfig_t *pBaseConfig,
     NativeAppPeerTable_t *pTable,
-    NativeAppPeer_t **ppPeer,
+    NativeAppPeer_t *pPeer,
     char *pcError,
     uint32_t uiErrorLength)
 {
@@ -925,13 +1047,12 @@ IpsecError_t RegisterNativeAppPeer(
     int32_t iLength;
     IpsecError_t eError;
 
-    if ((NULL == pBaseConfig) || (NULL == pTable) || (NULL == ppPeer) ||
-        (NATIVE_APP_ROLE_RESPONDER != pBaseConfig->eRole) ||
-        (pTable->uiCount >= NATIVE_APP_PEER_CAPACITY)) {
+    if ((NULL == pBaseConfig) || (NULL == pTable) || (NULL == pPeer) ||
+        (NATIVE_APP_ROLE_RESPONDER != pBaseConfig->eRole)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     else {
-        *ppPeer = NULL;
+        (void)memset(pPeer, 0, sizeof(*pPeer));
     }
     iSocket = OpenNativeAppClientSocket(pBaseConfig, pcError,
                                          uiErrorLength);
@@ -1013,7 +1134,7 @@ IpsecError_t RegisterNativeAppPeer(
         }
     }
     if (IPSEC_OK == eError) {
-        eError = AppendNativeAppPeer(pTable, &Peer, ppPeer);
+        eError = UpsertNativeAppPeer(pTable, &Peer, pPeer);
     }
     (void)close(iSocket);
     return eError;

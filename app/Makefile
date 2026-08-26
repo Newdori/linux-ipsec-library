@@ -51,6 +51,7 @@ SOURCES = \
 	config.c \
 	lifecycle.c \
 	peer.c \
+	state.c \
 	show.c \
 	main.c
 

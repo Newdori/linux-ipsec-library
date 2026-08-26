@@ -157,6 +157,7 @@ IpsecError_t StopNativeAppConnection(
         .uiStructSize = sizeof(IpsecControlOptions_t),
         .eMode = IPSEC_CONTROL_WAIT
     };
+    NativeAppTargetStatus_t Status = {0};
     IpsecError_t eFirstError;
     IpsecError_t eError;
 
@@ -166,32 +167,54 @@ IpsecError_t StopNativeAppConnection(
     else {
         Control.uiTimeoutMs = pConfig->uiTimeoutMs;
     }
-    eFirstError = TerminateIpsecIke(pContext, pConfig->acConnectionName,
-                                    &Control);
-    if (bRemoveConnection) {
+    eFirstError = GetNativeAppTargetStatus(pContext, pConfig, &Status);
+    if ((IPSEC_OK == eFirstError) &&
+        (Status.bIkeEstablished || Status.bChildInstalled)) {
+        eFirstError = TerminateIpsecIke(pContext,
+                                        pConfig->acConnectionName,
+                                        &Control);
+        if (IPSEC_OK == eFirstError) {
+            eFirstError = WaitNativeAppRemoved(
+                pContext, pConfig, Status.uiReqid);
+        }
+        else {
+            /* Do not unload resources until termination succeeds. */
+        }
+    }
+    else {
+        /* A missing SA satisfies termination; query errors are preserved. */
+    }
+    if (bRemoveConnection && Status.bConnectionLoaded &&
+        (IPSEC_OK == eFirstError)) {
         eError = RemoveIpsecConnection(pContext,
                                        pConfig->acConnectionName);
-        if ((IPSEC_OK == eFirstError) && (IPSEC_OK != eError)) {
+        if (IPSEC_OK != eError) {
             eFirstError = eError;
         }
         else {
-            /* Preserve the earlier error. */
+            /* The selected connection definition was removed. */
         }
+    }
+    else if (bRemoveConnection && Status.bConnectionLoaded) {
+        /* Preserve resources that are still required by an active SA. */
     }
     else {
         /* Keep the connection definition loaded. */
     }
-    if (bClearCredentials) {
-        eError = ClearIpsecCredentials(pContext);
-        if ((IPSEC_OK == eFirstError) && (IPSEC_OK != eError)) {
+    if (bClearCredentials && (IPSEC_OK == eFirstError)) {
+        eError = RemoveIpsecPsk(pContext, pConfig->acCredentialId);
+        if (IPSEC_OK != eError) {
             eFirstError = eError;
         }
         else {
-            /* Preserve the earlier error. */
+            /* The selected peer credential was removed. */
         }
     }
+    else if (bClearCredentials) {
+        /* Preserve the credential when the lifecycle cleanup is incomplete. */
+    }
     else {
-        /* Clearing VICI credentials is deliberately explicit and global. */
+        /* Keep the selected peer credential loaded. */
     }
     return eFirstError;
 }
@@ -455,7 +478,8 @@ IpsecError_t RunNativeAppLoop(
     IpsecContext_t *pContext,
     const NativeAppConfig_t *pConfig,
     NativeAppRuntimeConfig_t *pRuntime,
-    const NativeAppLoopOptions_t *pOptions)
+    const NativeAppLoopOptions_t *pOptions,
+    bool *pbCredentialLoaded)
 {
     IpsecControlOptions_t Control = {
         .uiStructSize = sizeof(IpsecControlOptions_t),
@@ -465,9 +489,11 @@ IpsecError_t RunNativeAppLoop(
     IpsecError_t eError;
     uint32_t uiIteration;
     uint32_t uiPassed = 0U;
+    bool bResourcesRemain = false;
 
     if ((NULL == pContext) || (NULL == pConfig) || (NULL == pRuntime) ||
-        (NULL == pOptions) || (0U == pOptions->uiCount)) {
+        (NULL == pOptions) || (NULL == pbCredentialLoaded) ||
+        (0U == pOptions->uiCount)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     else if (NATIVE_APP_ROLE_INITIATOR != pConfig->eRole) {
@@ -475,6 +501,7 @@ IpsecError_t RunNativeAppLoop(
     }
     else {
         Control.uiTimeoutMs = pConfig->uiTimeoutMs;
+        *pbCredentialLoaded = false;
     }
     eError = LoadNativeAppCredential(pContext, pConfig);
     if (IPSEC_OK != eError) {
@@ -482,6 +509,7 @@ IpsecError_t RunNativeAppLoop(
     }
     else {
         /* Reuse the credential while cycling only this connection and SA. */
+        *pbCredentialLoaded = true;
     }
 
     for (uiIteration = 1U;
@@ -491,6 +519,7 @@ IpsecError_t RunNativeAppLoop(
         uint32_t uiReqid = 0U;
         bool bConnectionLoaded = false;
         bool bSaStarted = false;
+        bool bCleanupComplete = true;
 
         (void)printf("loop %" PRIu32 "/%" PRIu32 ": load\n",
                      uiIteration, pOptions->uiCount);
@@ -513,6 +542,7 @@ IpsecError_t RunNativeAppLoop(
             IpsecError_t eCleanup = TerminateIpsecIke(
                 pContext, pConfig->acConnectionName, &Control);
 
+            bCleanupComplete = false;
             if ((IPSEC_OK == eError) && (IPSEC_OK != eCleanup)) {
                 eError = eCleanup;
             }
@@ -521,6 +551,12 @@ IpsecError_t RunNativeAppLoop(
             }
             if (IPSEC_OK == eCleanup) {
                 eCleanup = WaitNativeAppRemoved(pContext, pConfig, uiReqid);
+                if (IPSEC_OK == eCleanup) {
+                    bCleanupComplete = true;
+                }
+                else {
+                    /* Keep resources loaded until removal can be verified. */
+                }
                 if ((IPSEC_OK == eError) && (IPSEC_OK != eCleanup)) {
                     eError = eCleanup;
                 }
@@ -535,16 +571,30 @@ IpsecError_t RunNativeAppLoop(
         else {
             /* No SA owned by this iteration requires termination. */
         }
-        if (bConnectionLoaded) {
+        if (bConnectionLoaded && bCleanupComplete) {
             IpsecError_t eCleanup = RemoveIpsecConnection(
                 pContext, pConfig->acConnectionName);
 
+            if (IPSEC_OK != eCleanup) {
+                bCleanupComplete = false;
+                bResourcesRemain = true;
+            }
+            else {
+                /* The next iteration starts with no connection definition. */
+            }
             if ((IPSEC_OK == eError) && (IPSEC_OK != eCleanup)) {
                 eError = eCleanup;
             }
             else {
                 /* Preserve the primary error. */
             }
+        }
+        else if (bConnectionLoaded) {
+            bResourcesRemain = true;
+            (void)fprintf(
+                stderr,
+                "loop cleanup incomplete; connection remains loaded for "
+                "safe recovery\n");
         }
         else {
             /* No connection definition requires unloading. */
@@ -565,7 +615,7 @@ IpsecError_t RunNativeAppLoop(
             else {
                 /* Preserve the first loop failure. */
             }
-            if (!pOptions->bContinueOnError) {
+            if (!pOptions->bContinueOnError || !bCleanupComplete) {
                 break;
             }
             else {
@@ -580,8 +630,14 @@ IpsecError_t RunNativeAppLoop(
             /* No inter-iteration delay is required. */
         }
     }
-    if (pOptions->bClearCredentials) {
-        eError = ClearIpsecCredentials(pContext);
+    if (pOptions->bClearCredentials && !bResourcesRemain) {
+        eError = RemoveIpsecPsk(pContext, pConfig->acCredentialId);
+        if (IPSEC_OK == eError) {
+            *pbCredentialLoaded = false;
+        }
+        else {
+            /* Preserve the known loaded state when unloading fails. */
+        }
         if ((IPSEC_OK == eFirstError) && (IPSEC_OK != eError)) {
             eFirstError = eError;
         }
@@ -589,8 +645,13 @@ IpsecError_t RunNativeAppLoop(
             /* Preserve the loop result. */
         }
     }
+    else if (pOptions->bClearCredentials) {
+        (void)fprintf(
+            stderr,
+            "credential retained because lifecycle resources remain\n");
+    }
     else {
-        /* Avoid clearing credentials owned by other VICI clients. */
+        /* Keep the selected peer credential for later lifecycle operations. */
     }
     (void)printf("loop summary: passed=%" PRIu32 " requested=%" PRIu32
                  "\n", uiPassed, pOptions->uiCount);

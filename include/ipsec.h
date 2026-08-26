@@ -41,6 +41,11 @@ IpsecError_t AddIpsecPsk(
     IpsecContext_t *pContext,
     const IpsecPsk_t *pPsk);
 
+IpsecError_t RemoveIpsecPsk(
+    IpsecContext_t *pContext,
+    const char *pcCredentialId);
+
+/* Removes every credential loaded through VICI, not only one context owner. */
 IpsecError_t ClearIpsecCredentials(
     IpsecContext_t *pContext);
 

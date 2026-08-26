@@ -115,6 +115,34 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
         ipsec_static ${CMAKE_DL_LIBS})
     add_test(NAME test_algorithm_validation COMMAND test_algorithm_validation)
 
+    add_executable(test_app_state
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_app_state.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app/state.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app/peer.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app/command.c)
+    target_include_directories(test_app_state PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app)
+    target_compile_definitions(test_app_state PRIVATE
+        _POSIX_C_SOURCE=200809L)
+    target_compile_options(test_app_state PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(test_app_state PRIVATE
+        ipsec_static Threads::Threads)
+    add_test(NAME test_app_state COMMAND test_app_state)
+
+    add_executable(test_app_command
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_app_command.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app/command.c)
+    target_include_directories(test_app_command PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app)
+    target_compile_definitions(test_app_command PRIVATE
+        _POSIX_C_SOURCE=200809L)
+    target_compile_options(test_app_command PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME test_app_command COMMAND test_app_command)
+
     add_executable(test_cpp_header
         ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_cpp_header.cpp)
     target_include_directories(test_cpp_header PRIVATE

@@ -42,6 +42,22 @@ typedef enum NativeAppRole {
     NATIVE_APP_ROLE_RESPONDER
 } NativeAppRole_t;
 
+typedef enum NativeAppPeerState {
+    NATIVE_APP_PEER_STATE_REGISTERED = 0,
+    NATIVE_APP_PEER_STATE_CREDENTIAL_LOADED,
+    NATIVE_APP_PEER_STATE_CONNECTION_LOADED,
+    NATIVE_APP_PEER_STATE_READY,
+    NATIVE_APP_PEER_STATE_IKE_ESTABLISHED,
+    NATIVE_APP_PEER_STATE_CHILD_INSTALLED
+} NativeAppPeerState_t;
+
+typedef struct NativeAppTargetStatus {
+    uint32_t uiReqid;
+    bool bConnectionLoaded;
+    bool bIkeEstablished;
+    bool bChildInstalled;
+} NativeAppTargetStatus_t;
+
 typedef struct NativeAppConfig {
     NativeAppRole_t eRole;
     char acLocalAddress[IPSEC_ADDRESS_LENGTH];
@@ -67,9 +83,13 @@ typedef struct NativeAppConfig {
 typedef struct NativeAppPeer {
     uint32_t uiGroupId;
     uint32_t uiLogonId;
+    uint32_t uiRegistrationCount;
     NativeAppConfig_t Config;
+    NativeAppPeerState_t eState;
     bool bConnectionLoaded;
     bool bCredentialLoaded;
+    bool bIkeEstablished;
+    bool bChildInstalled;
 } NativeAppPeer_t;
 
 typedef struct NativeAppPeerTable {
@@ -412,7 +432,8 @@ IpsecError_t RunNativeAppLoop(
     IpsecContext_t *pContext,
     const NativeAppConfig_t *pConfig,
     NativeAppRuntimeConfig_t *pRuntime,
-    const NativeAppLoopOptions_t *pOptions);
+    const NativeAppLoopOptions_t *pOptions,
+    bool *pbCredentialLoaded);
 
 const char *GetNativeAppAlgorithmModeName(
     NativeAppAlgorithmMode_t eMode);
@@ -495,20 +516,56 @@ bool IsNativeAppPeerListenerRunning(
 IpsecError_t AcceptNativeAppPeer(
     const NativeAppConfig_t *pBaseConfig,
     NativeAppPeerTable_t *pTable,
-    NativeAppPeer_t **ppPeer,
+    NativeAppPeer_t *pPeer,
     char *pcError,
     uint32_t uiErrorLength);
 
 IpsecError_t RegisterNativeAppPeer(
     const NativeAppConfig_t *pBaseConfig,
     NativeAppPeerTable_t *pTable,
-    NativeAppPeer_t **ppPeer,
+    NativeAppPeer_t *pPeer,
     char *pcError,
     uint32_t uiErrorLength);
 
-NativeAppPeer_t *FindNativeAppPeer(
+IpsecError_t SelectNativeAppPeerRecord(
     NativeAppPeerTable_t *pTable,
-    const char *pcPeerId);
+    const char *pcPeerId,
+    NativeAppPeer_t *pPeer);
+
+IpsecError_t UpsertNativeAppPeer(
+    NativeAppPeerTable_t *pTable,
+    const NativeAppPeer_t *pPeer,
+    NativeAppPeer_t *pStoredPeer);
+
+NativeAppPeerState_t GetNativeAppPeerState(
+    bool bConnectionLoaded,
+    bool bCredentialLoaded,
+    bool bIkeEstablished,
+    bool bChildInstalled);
+
+const char *GetNativeAppPeerStateName(
+    NativeAppPeerState_t eState);
+
+void ResolveNativeAppTargetStatus(
+    const NativeAppConfig_t *pConfig,
+    const IpsecConnectionList_t *pConnections,
+    const IpsecIkeSaList_t *pIkeSas,
+    const IpsecChildSaList_t *pChildSas,
+    NativeAppTargetStatus_t *pStatus);
+
+IpsecError_t GetNativeAppTargetStatus(
+    IpsecContext_t *pContext,
+    const NativeAppConfig_t *pConfig,
+    NativeAppTargetStatus_t *pStatus);
+
+IpsecError_t GetNativeAppConnectionSaStatus(
+    IpsecContext_t *pContext,
+    const char *pcConnectionName,
+    bool *pbActive);
+
+IpsecError_t GetNativeAppAnySaStatus(
+    IpsecContext_t *pContext,
+    bool *pbActive);
 
 IpsecError_t ShowNativeAppInformation(
     IpsecContext_t *pContext,
