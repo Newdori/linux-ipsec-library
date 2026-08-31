@@ -460,6 +460,15 @@ IpsecError_t BuildNativeAppExpectedProposals(
     char *pcExpectedEsp,
     size_t zExpectedEspLength);
 
+/* Copy complete optional capability text, including its terminating NUL.
+ * Returns false and clears a writable destination when the source is NULL
+ * or does not fit. NULL/zero-capacity destinations are not written.
+ */
+bool CopyNativeAppCapabilityText(
+    char *pcDestination,
+    size_t zDestinationLength,
+    const char *pcSource);
+
 IpsecError_t CollectNativeAppAlgorithmCapabilities(
     IpsecContext_t *pContext,
     NativeAppAlgorithmCapabilities_t *pCapabilities);

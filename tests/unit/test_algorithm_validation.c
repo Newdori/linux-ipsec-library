@@ -67,6 +67,61 @@ static bool VerifyAllAlgorithmCases(
     return true;
 }
 
+static bool VerifyCapabilityTextBoundaries(void)
+{
+    char acSource[IPSEC_OS_NAME_LENGTH + 3U];
+    char acGuarded[IPSEC_OS_NAME_LENGTH + 2U];
+    char *pcDestination = acGuarded + 1U;
+    const size_t zCapacity = IPSEC_OS_NAME_LENGTH;
+    char acSingle[1] = {'X'};
+    char acOverlap[] = "abcd";
+    size_t zLength;
+    bool bCopied;
+
+    /* Include a 64-character uname value that cannot fit in a 64-byte field.
+     * Canary bytes verify that both successful and rejected copies stay bounded.
+     */
+    for (zLength = 0U; zLength < sizeof(acSource); zLength++) {
+        (void)memset(acSource, 'K', sizeof(acSource));
+        acSource[zLength] = '\0';
+        (void)memset(acGuarded, '#', sizeof(acGuarded));
+        bCopied = CopyNativeAppCapabilityText(pcDestination, zCapacity, acSource);
+        if ((bCopied != (zLength < zCapacity)) ||
+            ('#' != acGuarded[0]) || ('#' != acGuarded[zCapacity + 1U])) {
+            return false;
+        }
+        if (bCopied) {
+            if (0 != memcmp(pcDestination, acSource, zLength + 1U)) {
+                return false;
+            }
+        }
+        else if ('\0' != pcDestination[0]) {
+            return false;
+        }
+    }
+
+    /* An unterminated source is rejected after at most zCapacity bytes. */
+    (void)memset(acSource, 'K', sizeof(acSource));
+    if (CopyNativeAppCapabilityText(pcDestination, zCapacity, acSource) ||
+        ('\0' != pcDestination[0]) ||
+        CopyNativeAppCapabilityText(NULL, zCapacity, "text") ||
+        CopyNativeAppCapabilityText(acSingle, 0U, "text") ||
+        ('X' != acSingle[0]) ||
+        CopyNativeAppCapabilityText(acSingle, sizeof(acSingle), "X") ||
+        ('\0' != acSingle[0]) ||
+        !CopyNativeAppCapabilityText(acSingle, sizeof(acSingle), "") ||
+        ('\0' != acSingle[0])) {
+        return false;
+    }
+    pcDestination[0] = 'X';
+    if (CopyNativeAppCapabilityText(pcDestination, zCapacity, NULL) ||
+        ('\0' != pcDestination[0])) {
+        return false;
+    }
+    return CopyNativeAppCapabilityText(acOverlap, sizeof(acOverlap), acOverlap + 1U) &&
+        (0 == strcmp("bcd", acOverlap));
+}
+
 static bool VerifyCapabilityPolicy(void)
 {
     NativeAppAlgorithmCapabilities_t Capabilities = {0};
@@ -150,5 +205,6 @@ int main(void)
     bPassed = bPassed && VerifyAllAlgorithmCases(
         NATIVE_APP_ALGORITHM_EXHAUSTIVE_ESP, &Config);
     bPassed = bPassed && VerifyCapabilityPolicy();
+    bPassed = bPassed && VerifyCapabilityTextBoundaries();
     return bPassed ? 0 : 1;
 }
