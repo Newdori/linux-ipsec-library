@@ -61,6 +61,28 @@ typedef struct ViciCommandResult {
     char acErrorMessage[VICI_ERROR_MESSAGE_LENGTH];
 } ViciCommandResult_t;
 
+/* Each active wait owns its event socket and cancellation socketpair. There is no
+ * background receiver thread and no authoritative SA cache to go stale. */
+typedef struct ViciWaiter {
+    struct ViciWaiter *pNext;
+    int32_t aiCancelSockets[2];
+    IpsecContext_t EventContext;
+    uint64_t ullDeadlineMs;
+    bool bPolling;
+} ViciWaiter_t;
+
+bool IsViciWaitCancelled(int32_t iCancelFd);
+IpsecError_t BeginViciWait(IpsecContext_t *pContext, ViciWaiter_t *pWaiter,
+                           uint64_t ullDeadlineMs);
+void EndViciWait(IpsecContext_t *pContext, ViciWaiter_t *pWaiter);
+IpsecError_t SubscribeViciSaEvents(ViciWaiter_t *pWaiter, bool bChild);
+IpsecError_t ReceiveViciSaChange(ViciWaiter_t *pWaiter);
+IpsecError_t PauseViciWait(ViciWaiter_t *pWaiter);
+void CloseViciWaits(IpsecContext_t *pContext);
+
+IpsecError_t WaitViciTransportReadable(IpsecContext_t *pContext,
+                                      uint64_t ullDeadlineMs);
+
 typedef IpsecError_t (*ViciElementCallback_t)(
     const ViciElement_t *pElement,
     void *pvUserData);
@@ -162,6 +184,18 @@ IpsecError_t ParseViciCommandResult(
     const uint8_t *pucMessage,
     uint32_t uiMessageLength,
     ViciCommandResult_t *pResult);
+
+IpsecError_t ExecuteViciCommandUntil(
+    IpsecContext_t *pContext,
+    const char *pcCommand,
+    const ViciBuffer_t *pRequest,
+    const char *pcEventName,
+    ViciMessageCallback_t pEventCallback,
+    ViciMessageCallback_t pResponseCallback,
+    void *pvUserData,
+    ViciCommandResult_t *pResult,
+    uint64_t ullDeadlineMs,
+    int32_t iCancelFd);
 
 IpsecError_t ParseViciDaemonStatusMessage(
     const uint8_t *pucMessage,

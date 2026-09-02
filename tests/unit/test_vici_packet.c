@@ -176,6 +176,9 @@ static int32_t TestPacketBoundary(void)
     static const uint8_t aucBadPacket[] = {
         0U, 8U, 'v', 'e', 'r'
     };
+    static const uint8_t aucBadConfirmation[] = {
+        (uint8_t)VICI_PACKET_EVENT_CONFIRM, 0U
+    };
     ViciPacketView_t View;
     IpsecError_t eError;
 
@@ -188,6 +191,10 @@ static int32_t TestPacketBoundary(void)
     else if (IPSEC_ERR_VICI_PROTOCOL !=
              DecodeViciPacket(aucBadPacket, sizeof(aucBadPacket), &View)) {
         return ReportFailure("truncated named packet accepted");
+    }
+    else if (IPSEC_ERR_VICI_PROTOCOL != DecodeViciPacket(
+                 aucBadConfirmation, sizeof(aucBadConfirmation), &View)) {
+        return ReportFailure("unexpected confirmation payload accepted");
     }
     else {
         return 0;

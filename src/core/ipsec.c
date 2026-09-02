@@ -1,5 +1,8 @@
 #include "../internal/ipsec_internal.h"
 #include "../ike/vici/vici_internal.h"
+#include "../datapath/common/datapath_ops.h"
+#include "../datapath/protected/protected_path_ops.h"
+#include "../datapath/plain/plain_path_ops.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -70,9 +73,11 @@ static IpsecError_t ConnectDefaultIpsecSocket(IpsecContext_t *pContext)
     return eError;
 }
 
-IpsecError_t InitializeIpsec(
+static IpsecError_t InitializeIpsecInternal(
     IpsecContext_t **ppContext,
-    const IpsecConfig_t *pConfig)
+    const IpsecConfig_t *pConfig,
+    const IpsecDatapathConfig_t *pDatapathConfig,
+    bool bStrictDatapath)
 {
     IpsecContext_t *pContext = NULL;
     IpsecConfig_t DefaultConfig;
@@ -107,6 +112,10 @@ IpsecError_t InitializeIpsec(
         }
     }
 
+    if (IPSEC_OK == eError) {
+        eError = ConfigureIpsecDatapath(pContext, pDatapathConfig);
+    }
+
     if ((IPSEC_OK == eError) && ('\0' == pContext->acViciSocketPath[0])) {
         eError = ConnectDefaultIpsecSocket(pContext);
     }
@@ -125,19 +134,31 @@ IpsecError_t InitializeIpsec(
     }
 
     if (IPSEC_OK == eError) {
+        eError = InitializeIpsecDatapath(pContext);
+        if ((IPSEC_OK != eError) && !bStrictDatapath) {
+            /* Preserve legacy control-only initialization. Datapath getters
+             * retain the probe error; no backend/path readiness is implied.
+             */
+            eError = IPSEC_OK;
+        }
+    }
+    if (IPSEC_OK == eError) {
+        eError = InitializeIpsecProtectedPath(pContext);
+    }
+    if (IPSEC_OK == eError) {
+        eError = InitializeIpsecPlainPath(pContext);
+    }
+    if (IPSEC_OK == eError) {
         *ppContext = pContext;
         LogIpsec(pContext, IPSEC_LOG_INFO, "connected to charon VICI socket %s",
                  pContext->acViciSocketPath);
     }
     else if (NULL != pContext) {
+        DeinitializeIpsecPlainPath(pContext);
+        DeinitializeIpsecProtectedPath(pContext);
+        DeinitializeIpsecDatapath(pContext);
         DisconnectViciTransport(pContext);
-        if (pContext->bCommandMutexInitialized) {
-            (void)pthread_mutex_destroy(&pContext->CommandMutex);
-            pContext->bCommandMutexInitialized = false;
-        }
-        else {
-            /* Mutex was not initialized. */
-        }
+        DestroyIpsecContextState(pContext);
         SecureZeroIpsec(pContext, sizeof(*pContext));
         free(pContext);
     }
@@ -148,27 +169,30 @@ IpsecError_t InitializeIpsec(
     return eError;
 }
 
+IpsecError_t InitializeIpsec(IpsecContext_t **ppContext,
+                             const IpsecConfig_t *pConfig)
+{
+    return InitializeIpsecInternal(ppContext, pConfig, NULL, false);
+}
+
+IpsecError_t InitializeIpsecWithDatapath(IpsecContext_t **ppContext,
+    const IpsecConfig_t *pConfig, const IpsecDatapathConfig_t *pDatapathConfig)
+{
+    return InitializeIpsecInternal(ppContext, pConfig, pDatapathConfig, true);
+}
+
 void DeinitializeIpsec(IpsecContext_t *pContext)
 {
     if (NULL != pContext) {
-        if (0 == pthread_mutex_lock(&pContext->CommandMutex)) {
-            DisconnectViciTransport(pContext);
-            (void)pthread_mutex_unlock(&pContext->CommandMutex);
-        }
-        else {
-            DisconnectViciTransport(pContext);
-        }
-        if (pContext->bCommandMutexInitialized) {
-            (void)pthread_mutex_destroy(&pContext->CommandMutex);
-            pContext->bCommandMutexInitialized = false;
-        }
-        else {
-            /* Mutex was not initialized. */
-        }
+        /* Caller prevents new API entries before destruction. Registered waits
+         * are cancelled and drained; each owns/closes its receiver connection. */
+        CloseViciWaits(pContext);
+        DeinitializeIpsecPlainPath(pContext);
+        DeinitializeIpsecProtectedPath(pContext);
+        DeinitializeIpsecDatapath(pContext);
+        DisconnectViciTransport(pContext);
+        DestroyIpsecContextState(pContext);
         SecureZeroIpsec(pContext, sizeof(*pContext));
         free(pContext);
-    }
-    else {
-        /* NULL deinitialization is safe. */
     }
 }

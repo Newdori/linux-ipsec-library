@@ -589,6 +589,22 @@ IpsecError_t AddIpsecConnection(
     else {
         eError = ValidateConnectionConfig(pConfig);
     }
+    if ((IPSEC_OK == eError) &&
+        (IPSEC_PACKET_PATH_APPLICATION == pContext->DatapathConfig.eProtectedPacketPath)) {
+        /* Protected APPLICATION is scoped to one fixed outer IPv4 pair. Do not silently
+         * let a configuration loaded through this context bypass its sink.
+         * NAT detection may still select UDP ESP; the output guard drops it.
+         */
+        if (pConfig->bForceUdpEncapsulation || pConfig->bEnableMobike ||
+            (1U != pConfig->LocalAddresses.uiCount) ||
+            (1U != pConfig->RemoteAddresses.uiCount) ||
+            (0 != strcmp(pConfig->LocalAddresses.ppcItems[0],
+                         pContext->DatapathConfig.acProtectedLocalAddress)) ||
+            (0 != strcmp(pConfig->RemoteAddresses.ppcItems[0],
+                         pContext->DatapathConfig.acProtectedRemoteAddress))) {
+            eError = IPSEC_ERR_NOT_SUPPORTED;
+        }
+    }
     if (IPSEC_OK == eError) {
         eError = BuildConnectionMessage(pConfig, &Message);
     }

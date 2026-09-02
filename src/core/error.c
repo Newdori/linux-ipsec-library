@@ -77,8 +77,62 @@ const char *GetIpsecErrorString(IpsecError_t eError)
     case IPSEC_ERR_RANDOM:
         pcMessage = "secure random generation failed";
         break;
+    case IPSEC_ERR_CANCELLED:
+        pcMessage = "operation cancelled";
+        break;
     case IPSEC_ERR_INTERNAL:
         pcMessage = "internal error";
+        break;
+    case IPSEC_ERR_INVALID_DATAPATH:
+        pcMessage = "invalid datapath preference";
+        break;
+    case IPSEC_ERR_DATAPATH_UNAVAILABLE:
+        pcMessage = "IPsec datapath unavailable";
+        break;
+    case IPSEC_ERR_BACKEND_MISMATCH:
+        pcMessage = "operation does not apply to the active backend";
+        break;
+    case IPSEC_ERR_INVALID_PACKET_PATH:
+        pcMessage = "invalid packet path";
+        break;
+    case IPSEC_ERR_PACKET_PATH_MISMATCH:
+        pcMessage = "operation does not apply to the packet path";
+        break;
+    case IPSEC_ERR_INTERFACE_NOT_FOUND:
+        pcMessage = "required interface not found";
+        break;
+    case IPSEC_ERR_INTERFACE_AMBIGUOUS:
+        pcMessage = "multiple TUN candidates; specify an interface";
+        break;
+    case IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE:
+        pcMessage = "protected packet path unavailable";
+        break;
+    case IPSEC_ERR_PLAIN_PATH_UNAVAILABLE:
+        pcMessage = "plain packet path unavailable";
+        break;
+    case IPSEC_ERR_PROTECTED_RECEIVE:
+        pcMessage = "protected packet receive failed";
+        break;
+    case IPSEC_ERR_PROTECTED_SUBMIT:
+        pcMessage = "protected packet submit failed";
+        break;
+    case IPSEC_ERR_PLAIN_RECEIVE:
+        pcMessage = "plain packet receive failed";
+        break;
+    case IPSEC_ERR_PACKET_TYPE:
+        pcMessage = "protected packet type is not supported";
+        break;
+    case IPSEC_ERR_PACKET_INVALID:
+        pcMessage = "invalid packet data";
+        break;
+    case IPSEC_ERR_PACKET_TIMEOUT:
+        pcMessage = "packet operation timed out";
+        break;
+    case IPSEC_ERR_ADDRESS_FAMILY:
+        pcMessage = "packet address family is not supported";
+        break;
+    case IPSEC_ERR_RESOURCE_CONFLICT:
+        pcMessage = "resource already exists or is not exclusively available";
         break;
     default:
         pcMessage = "unknown error";

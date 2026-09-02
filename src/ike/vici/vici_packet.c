@@ -38,7 +38,18 @@ static IpsecError_t ReserveViciBuffer(
                 }
             }
 
-            pucNewData = (uint8_t *)realloc(pBuffer->pucData, uiNewCapacity);
+            /* realloc may release an old PSK allocation without wiping it. */
+            if (pBuffer->bSensitive) {
+                pucNewData = (uint8_t *)malloc(uiNewCapacity);
+                if ((NULL != pucNewData) && (NULL != pBuffer->pucData)) {
+                    memcpy(pucNewData, pBuffer->pucData, pBuffer->uiLength);
+                    SecureZeroIpsec(pBuffer->pucData, pBuffer->uiCapacity);
+                    free(pBuffer->pucData);
+                }
+            }
+            else {
+                pucNewData = (uint8_t *)realloc(pBuffer->pucData, uiNewCapacity);
+            }
             if (NULL == pucNewData) {
                 eError = IPSEC_ERR_NO_MEMORY;
             }
@@ -393,6 +404,14 @@ IpsecError_t DecodeViciPacket(
         if (IPSEC_OK == eError) {
             pView->pucMessage = pucPacket + uiOffset;
             pView->uiMessageLength = uiPacketLength - uiOffset;
+            if (((VICI_PACKET_COMMAND_UNKNOWN == pView->eType) ||
+                 (VICI_PACKET_EVENT_REGISTER == pView->eType) ||
+                 (VICI_PACKET_EVENT_UNREGISTER == pView->eType) ||
+                 (VICI_PACKET_EVENT_CONFIRM == pView->eType) ||
+                 (VICI_PACKET_EVENT_UNKNOWN == pView->eType)) &&
+                (0U != pView->uiMessageLength)) {
+                eError = IPSEC_ERR_VICI_PROTOCOL;
+            }
         }
         else {
             /* Preserve protocol error. */

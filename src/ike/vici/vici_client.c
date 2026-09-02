@@ -1,6 +1,8 @@
 #include "vici_internal.h"
 
 #include <string.h>
+#include <errno.h>
+#include <time.h>
 
 typedef struct ViciResultParserContext {
     ViciCommandResult_t *pResult;
@@ -32,9 +34,14 @@ static IpsecError_t ParseViciResultElement(
     ViciResultParserContext_t *pContext =
         (ViciResultParserContext_t *)pvUserData;
     IpsecError_t eError = IPSEC_OK;
+    uint32_t uiIndex;
+    uint32_t uiLength;
 
-    if ((VICI_ELEMENT_KEY_VALUE == pElement->eType) &&
+    if ((0U == pElement->uiDepth) && (VICI_ELEMENT_KEY_VALUE == pElement->eType) &&
         MatchViciText(pElement->pucName, pElement->ucNameLength, "success")) {
+        if (pContext->pResult->bSuccessPresent) {
+            return IPSEC_ERR_VICI_PROTOCOL;
+        }
         pContext->pResult->bSuccessPresent = true;
         if (MatchViciText(pElement->pucValue, pElement->usValueLength, "yes")) {
             pContext->pResult->bSuccess = true;
@@ -46,18 +53,18 @@ static IpsecError_t ParseViciResultElement(
             eError = IPSEC_ERR_VICI_PROTOCOL;
         }
     }
-    else if ((VICI_ELEMENT_KEY_VALUE == pElement->eType) &&
+    else if ((0U == pElement->uiDepth) && (VICI_ELEMENT_KEY_VALUE == pElement->eType) &&
              MatchViciText(pElement->pucName, pElement->ucNameLength, "errmsg")) {
-        eError = CopyIpsecString(pContext->pResult->acErrorMessage,
-                                 sizeof(pContext->pResult->acErrorMessage),
-                                 pElement->pucValue,
-                                 pElement->usValueLength);
-        if (IPSEC_ERR_BUFFER_TOO_SMALL == eError) {
-            eError = IPSEC_OK;
+        uiLength = pElement->usValueLength;
+        if (uiLength >= sizeof(pContext->pResult->acErrorMessage)) {
+            uiLength = sizeof(pContext->pResult->acErrorMessage) - 1U;
         }
-        else {
-            /* Preserve parser result. */
+        for (uiIndex = 0U; uiIndex < uiLength; uiIndex++) {
+            uint8_t ucValue = pElement->pucValue[uiIndex];
+            pContext->pResult->acErrorMessage[uiIndex] =
+                ((ucValue < 32U) || (127U == ucValue)) ? ' ' : (char)ucValue;
         }
+        pContext->pResult->acErrorMessage[uiLength] = '\0';
     }
     else {
         /* Ignore unrelated command fields. */
@@ -144,7 +151,8 @@ static IpsecError_t ReceiveViciCommandStream(
     ViciMessageCallback_t pEventCallback,
     ViciMessageCallback_t pResponseCallback,
     void *pvUserData,
-    ViciCommandResult_t *pResult)
+    ViciCommandResult_t *pResult,
+    bool *pbOutcomeKnown)
 {
     ViciBuffer_t Packet = {0};
     ViciPacketView_t View;
@@ -189,9 +197,11 @@ static IpsecError_t ReceiveViciCommandStream(
                 /* No custom response parser or existing error. */
             }
             bComplete = true;
+            *pbOutcomeKnown = (IPSEC_OK == eError);
         }
         else if ((IPSEC_OK == eError) &&
                  (VICI_PACKET_COMMAND_UNKNOWN == View.eType)) {
+            *pbOutcomeKnown = true;
             eError = IPSEC_ERR_NOT_SUPPORTED;
         }
         else if (IPSEC_OK == eError) {
@@ -207,6 +217,203 @@ static IpsecError_t ReceiveViciCommandStream(
     return eError;
 }
 
+static bool RequireViciSuccessField(const char *pcCommand)
+{
+    static const char *const apcMutations[] = {
+        "load-conn", "unload-conn", "load-shared", "unload-shared",
+        "clear-creds", "initiate", "terminate", "rekey"
+    };
+    uint32_t uiIndex;
+
+    for (uiIndex = 0U; uiIndex < (sizeof(apcMutations) / sizeof(apcMutations[0])); uiIndex++) {
+        if (0 == strcmp(pcCommand, apcMutations[uiIndex])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static IpsecError_t AcquireViciCommand(
+    IpsecContext_t *pContext,
+    uint64_t ullDeadlineMs,
+    int32_t iCancelFd)
+{
+    struct timespec Deadline;
+    int32_t iResult = 0;
+    IpsecError_t eError = IPSEC_OK;
+
+    Deadline.tv_sec = (time_t)(ullDeadlineMs / 1000U);
+    Deadline.tv_nsec = (int64_t)((ullDeadlineMs % 1000U) * 1000000U);
+    if (0 != pthread_mutex_lock(&pContext->CommandMutex)) {
+        return IPSEC_ERR_INTERNAL;
+    }
+    while (pContext->bCommandActive && !pContext->bClosing &&
+           !IsViciWaitCancelled(iCancelFd) && (0 == iResult)) {
+        iResult = pthread_cond_timedwait(&pContext->CommandCondition,
+                                        &pContext->CommandMutex, &Deadline);
+    }
+    if (pContext->bClosing || IsViciWaitCancelled(iCancelFd)) {
+        eError = IPSEC_ERR_CANCELLED;
+    }
+    else if ((ETIMEDOUT == iResult) ||
+             (GetIpsecMonotonicMilliseconds() >= ullDeadlineMs)) {
+        eError = IPSEC_ERR_VICI_TIMEOUT;
+    }
+    else if (0 != iResult) {
+        eError = IPSEC_ERR_INTERNAL;
+    }
+    else {
+        pContext->bCommandActive = true;
+    }
+    (void)pthread_mutex_unlock(&pContext->CommandMutex);
+    return eError;
+}
+
+IpsecError_t ExecuteViciCommandUntil(
+    IpsecContext_t *pContext,
+    const char *pcCommand,
+    const ViciBuffer_t *pRequest,
+    const char *pcEventName,
+    ViciMessageCallback_t pEventCallback,
+    ViciMessageCallback_t pResponseCallback,
+    void *pvUserData,
+    ViciCommandResult_t *pResult,
+    uint64_t ullDeadlineMs,
+    int32_t iCancelFd)
+{
+    ViciBuffer_t Packet = {0};
+    ViciCommandResult_t LocalResult;
+    IpsecDiagnostic_t Diagnostic = {0};
+    uint64_t ullNowMs;
+    uint64_t ullCommandLimit;
+    bool bAcquired = false;
+    bool bRegistered = false;
+    bool bSendAttempted = false;
+    bool bResponseValid = false;
+    bool bSensitive;
+    IpsecError_t eError;
+
+    if ((NULL == pContext) || (NULL == pcCommand)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    if (NULL == pResult) {
+        pResult = &LocalResult;
+    }
+    memset(pResult, 0, sizeof(*pResult));
+    Diagnostic.uiStructSize = sizeof(Diagnostic);
+    Diagnostic.eStage = IPSEC_STAGE_QUEUE;
+    (void)CopyIpsecString(Diagnostic.acCommand, sizeof(Diagnostic.acCommand),
+                         (const uint8_t *)pcCommand, strlen(pcCommand));
+    bSensitive = (NULL != pRequest) && pRequest->bSensitive;
+    ullNowMs = GetIpsecMonotonicMilliseconds();
+    if ((0U == ullNowMs) ||
+        (ullNowMs > (UINT64_MAX - pContext->uiCommandTimeoutMs))) {
+        return IPSEC_ERR_INTERNAL;
+    }
+    ullCommandLimit = ullNowMs + pContext->uiCommandTimeoutMs;
+    if ((0U == ullDeadlineMs) || (ullDeadlineMs > ullCommandLimit)) {
+        ullDeadlineMs = ullCommandLimit;
+    }
+    eError = AcquireViciCommand(pContext, ullDeadlineMs, iCancelFd);
+    if (IPSEC_OK == eError) {
+        bAcquired = true;
+        pContext->ullCommandDeadlineMs = ullDeadlineMs;
+        pContext->iTransportCancelFd = iCancelFd;
+        Diagnostic.eStage = IPSEC_STAGE_CONNECT;
+        errno = 0;
+        eError = ConnectViciTransport(pContext);
+    }
+    if ((IPSEC_OK == eError) && (NULL != pcEventName)) {
+        Diagnostic.eStage = IPSEC_STAGE_REGISTER;
+        errno = 0;
+        eError = ExchangeViciRegistration(pContext, pcEventName, true);
+        bRegistered = (IPSEC_OK == eError);
+    }
+    if (IPSEC_OK == eError) {
+        Diagnostic.eStage = IPSEC_STAGE_ENCODE;
+        errno = 0;
+        eError = BuildViciNamedPacket(VICI_PACKET_COMMAND_REQUEST,
+                                      pcCommand, pRequest, &Packet);
+    }
+    if (IPSEC_OK == eError) {
+        Diagnostic.eStage = IPSEC_STAGE_SEND;
+        bSendAttempted = true;
+        errno = 0;
+        eError = SendViciTransportPacket(pContext, &Packet);
+    }
+    if (IPSEC_OK == eError) {
+        Diagnostic.eStage = IPSEC_STAGE_RECEIVE;
+        errno = 0;
+        eError = ReceiveViciCommandStream(pContext, pcEventName,
+                                         pEventCallback, pResponseCallback,
+                                         pvUserData, pResult, &bResponseValid);
+        if ((IPSEC_OK == eError) && RequireViciSuccessField(pcCommand) &&
+            !pResult->bSuccessPresent) {
+            eError = IPSEC_ERR_VICI_PROTOCOL;
+            bResponseValid = false;
+        }
+    }
+    /* A parser/callback error may leave stream events and a response unread.
+     * Never send unregister or a new command on a stream of unknown position.
+     * Reconnect on the NEXT call; never replay a possibly executed mutation.
+     */
+    if (bAcquired && (IPSEC_OK != eError)) {
+        Diagnostic.iSystemError = (IPSEC_ERR_VICI_CONNECT == eError ||
+                                   IPSEC_ERR_VICI_TRANSPORT == eError ||
+                                   IPSEC_ERR_PERMISSION == eError) ? errno : 0;
+        DisconnectViciTransport(pContext);
+    }
+    else if (bRegistered) {
+        Diagnostic.eStage = IPSEC_STAGE_UNREGISTER;
+        errno = 0;
+        eError = ExchangeViciRegistration(pContext, pcEventName, false);
+        if (IPSEC_OK != eError) {
+            Diagnostic.iSystemError = (IPSEC_ERR_VICI_TRANSPORT == eError) ? errno : 0;
+            DisconnectViciTransport(pContext);
+        }
+    }
+
+    /* Daemon replies can echo input. Never expose an echoed PSK in diagnostics
+     * or logger callbacks, even if a malicious/buggy daemon returns one.
+     */
+    if (bSensitive) {
+        SecureZeroIpsec(pResult->acErrorMessage, sizeof(pResult->acErrorMessage));
+    }
+    if ((IPSEC_OK == eError) && pResult->bSuccessPresent && !pResult->bSuccess) {
+        Diagnostic.eStage = IPSEC_STAGE_DAEMON;
+        eError = IPSEC_ERR_VICI_COMMAND;
+    }
+    if (IPSEC_OK == eError) {
+        Diagnostic.eStage = IPSEC_STAGE_NONE;
+    }
+    Diagnostic.eError = eError;
+    Diagnostic.bOutcomeUnknown = bSendAttempted && !bResponseValid;
+    if (IPSEC_OK != eError) {
+        const char *pcMessage = ('\0' != pResult->acErrorMessage[0]) ?
+            pResult->acErrorMessage : GetIpsecErrorString(eError);
+        (void)CopyIpsecString(Diagnostic.acMessage, sizeof(Diagnostic.acMessage),
+                             (const uint8_t *)pcMessage, strlen(pcMessage));
+    }
+    DestroyViciBuffer(&Packet);
+    if (bAcquired) {
+        pContext->ullCommandDeadlineMs = 0U;
+        pContext->iTransportCancelFd = -1;
+    }
+    (void)pthread_mutex_lock(&pContext->CommandMutex);
+    pContext->LastDiagnostic = Diagnostic;
+    if (bAcquired) {
+        pContext->bCommandActive = false;
+        (void)pthread_cond_broadcast(&pContext->CommandCondition);
+    }
+    (void)pthread_mutex_unlock(&pContext->CommandMutex);
+
+    if (IPSEC_ERR_VICI_COMMAND == eError) {
+        LogIpsec(pContext, IPSEC_LOG_ERROR, "VICI command %s failed: %s",
+                 pcCommand, Diagnostic.acMessage);
+    }
+    return eError;
+}
+
 IpsecError_t ExecuteViciCommand(
     IpsecContext_t *pContext,
     const char *pcCommand,
@@ -217,102 +424,7 @@ IpsecError_t ExecuteViciCommand(
     void *pvUserData,
     ViciCommandResult_t *pResult)
 {
-    ViciBuffer_t Packet = {0};
-    ViciCommandResult_t LocalResult;
-    bool bRegistered = false;
-    uint64_t ullNowMs;
-    IpsecError_t eError;
-    IpsecError_t eUnregisterError;
-
-    if ((NULL == pContext) || (NULL == pcCommand)) {
-        eError = IPSEC_ERR_INVALID_ARGUMENT;
-    }
-    else {
-        if (NULL == pResult) {
-            pResult = &LocalResult;
-        }
-        else {
-            /* Use caller result storage. */
-        }
-        memset(pResult, 0, sizeof(*pResult));
-
-        if (0 != pthread_mutex_lock(&pContext->CommandMutex)) {
-            eError = IPSEC_ERR_INTERNAL;
-        }
-        else {
-            ullNowMs = GetIpsecMonotonicMilliseconds();
-            if ((0U == ullNowMs) ||
-                ((UINT64_MAX - pContext->uiCommandTimeoutMs) < ullNowMs)) {
-                eError = IPSEC_ERR_INTERNAL;
-            }
-            else {
-                pContext->ullCommandDeadlineMs =
-                    ullNowMs + pContext->uiCommandTimeoutMs;
-                eError = ConnectViciTransport(pContext);
-            }
-            if ((IPSEC_OK == eError) && (NULL != pcEventName)) {
-                eError = ExchangeViciRegistration(pContext, pcEventName, true);
-                bRegistered = (IPSEC_OK == eError);
-            }
-            else {
-                /* No event registration or existing connection error. */
-            }
-
-            if (IPSEC_OK == eError) {
-                eError = BuildViciNamedPacket(VICI_PACKET_COMMAND_REQUEST,
-                                              pcCommand, pRequest, &Packet);
-            }
-            else {
-                /* Preserve registration error. */
-            }
-            if (IPSEC_OK == eError) {
-                eError = SendViciTransportPacket(pContext, &Packet);
-            }
-            else {
-                /* Preserve packet error. */
-            }
-            if (IPSEC_OK == eError) {
-                eError = ReceiveViciCommandStream(pContext, pcEventName,
-                                                  pEventCallback,
-                                                  pResponseCallback,
-                                                  pvUserData, pResult);
-            }
-            else {
-                /* Preserve send error. */
-            }
-
-            if (bRegistered && (0 <= pContext->iViciSocket)) {
-                eUnregisterError = ExchangeViciRegistration(pContext,
-                                                            pcEventName,
-                                                            false);
-                if ((IPSEC_OK == eError) && (IPSEC_OK != eUnregisterError)) {
-                    eError = eUnregisterError;
-                }
-                else {
-                    /* Preserve command result. */
-                }
-            }
-            else {
-                /* Event was not registered or transport was lost. */
-            }
-
-            pContext->ullCommandDeadlineMs = 0U;
-            (void)pthread_mutex_unlock(&pContext->CommandMutex);
-        }
-
-        if ((IPSEC_OK == eError) && pResult->bSuccessPresent &&
-            !pResult->bSuccess) {
-            LogIpsec(pContext, IPSEC_LOG_ERROR, "VICI command %s failed: %s",
-                     pcCommand,
-                     ('\0' != pResult->acErrorMessage[0]) ?
-                     pResult->acErrorMessage : "daemon rejected request");
-            eError = IPSEC_ERR_VICI_COMMAND;
-        }
-        else {
-            /* Command succeeded or does not have a success field. */
-        }
-    }
-
-    DestroyViciBuffer(&Packet);
-    return eError;
+    return ExecuteViciCommandUntil(pContext, pcCommand, pRequest, pcEventName,
+                                   pEventCallback, pResponseCallback, pvUserData,
+                                   pResult, 0U, -1);
 }

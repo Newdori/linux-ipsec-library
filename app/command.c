@@ -12,6 +12,45 @@ static bool IsNativeAppNamedShowScope(const char *pcScope)
            (0 == strcmp("child", pcScope));
 }
 
+bool ParseNativeAppPacketOptions(uint32_t uiArgumentCount,
+    char **ppcArguments, NativeAppPacketOptions_t *pOptions)
+{
+    NativeAppPacketOptions_t Options = {.uiTimeoutMs = 10000U};
+    if ((NULL == ppcArguments) || (NULL == pOptions) ||
+        ((3U != uiArgumentCount) && (5U != uiArgumentCount))) {
+        return false;
+    }
+    if ((NULL == ppcArguments[0]) || (NULL == ppcArguments[1]) ||
+        (NULL == ppcArguments[2]) || ('\0' == ppcArguments[2][0]) ||
+        (0 != strcmp("packet", ppcArguments[0]))) {
+        return false;
+    }
+    if (0 == strcmp("protected-receive", ppcArguments[1])) {
+        Options.eAction = NATIVE_APP_PACKET_PROTECTED_RECEIVE;
+    }
+    else if (0 == strcmp("protected-submit", ppcArguments[1])) {
+        Options.eAction = NATIVE_APP_PACKET_PROTECTED_SUBMIT;
+    }
+    else if (0 == strcmp("plain-receive", ppcArguments[1])) {
+        Options.eAction = NATIVE_APP_PACKET_PLAIN_RECEIVE;
+    }
+    else {
+        return false;
+    }
+    Options.pcPath = ppcArguments[2];
+    if (5U == uiArgumentCount) {
+        if ((NATIVE_APP_PACKET_PROTECTED_SUBMIT == Options.eAction) ||
+            (NULL == ppcArguments[3]) ||
+            (0 != strcmp("--timeout-ms", ppcArguments[3])) ||
+            !ParseNativeAppNumber(ppcArguments[4], &Options.uiTimeoutMs) ||
+            (Options.uiTimeoutMs > 600000U)) {
+            return false;
+        }
+    }
+    *pOptions = Options;
+    return true;
+}
+
 static bool IsNativeAppDetailedShowScope(const char *pcScope)
 {
     return IsNativeAppNamedShowScope(pcScope) ||

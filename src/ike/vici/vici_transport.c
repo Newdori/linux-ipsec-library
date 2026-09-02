@@ -36,18 +36,21 @@ static uint64_t GetViciCommandDeadline(const IpsecContext_t *pContext)
 static IpsecError_t WaitViciSocket(
     int32_t iSocket,
     int16_t sEvents,
-    uint64_t ullDeadlineMs)
+    uint64_t ullDeadlineMs,
+    int32_t iCancelFd)
 {
-    struct pollfd PollDescriptor;
+    struct pollfd aPollDescriptors[2];
     uint64_t ullNowMs;
     uint64_t ullRemainingMs;
     int32_t iTimeoutMs;
     int32_t iResult;
     IpsecError_t eError;
 
-    memset(&PollDescriptor, 0, sizeof(PollDescriptor));
-    PollDescriptor.fd = iSocket;
-    PollDescriptor.events = sEvents;
+    memset(aPollDescriptors, 0, sizeof(aPollDescriptors));
+    aPollDescriptors[0].fd = iSocket;
+    aPollDescriptors[0].events = sEvents;
+    aPollDescriptors[1].fd = iCancelFd;
+    aPollDescriptors[1].events = POLLIN;
 
     while (true) {
         ullNowMs = GetIpsecMonotonicMilliseconds();
@@ -59,12 +62,12 @@ static IpsecError_t WaitViciSocket(
             ullRemainingMs = ullDeadlineMs - ullNowMs;
             iTimeoutMs = (INT32_MAX < ullRemainingMs) ? INT32_MAX :
                          (int32_t)ullRemainingMs;
-            iResult = (int32_t)poll(&PollDescriptor, 1U, iTimeoutMs);
+            iResult = (int32_t)poll(aPollDescriptors, 2U, iTimeoutMs);
             if (0 < iResult) {
-                if (0 != (PollDescriptor.revents & (POLLERR | POLLHUP | POLLNVAL))) {
-                    eError = IPSEC_ERR_VICI_TRANSPORT;
+                if (0 != aPollDescriptors[1].revents) {
+                    eError = IPSEC_ERR_CANCELLED;
                 }
-                else if (0 != (PollDescriptor.revents & sEvents)) {
+                else if (0 != (aPollDescriptors[0].revents & sEvents)) {
                     eError = IPSEC_OK;
                 }
                 else {
@@ -94,7 +97,8 @@ static IpsecError_t TransferViciBytes(
     uint8_t *pucData,
     uint32_t uiLength,
     bool bSend,
-    uint64_t ullDeadlineMs)
+    uint64_t ullDeadlineMs,
+    int32_t iCancelFd)
 {
     uint32_t uiOffset = 0U;
     ssize_t lResult;
@@ -102,7 +106,7 @@ static IpsecError_t TransferViciBytes(
 
     while ((uiOffset < uiLength) && (IPSEC_OK == eError)) {
         eError = WaitViciSocket(iSocket, bSend ? POLLOUT : POLLIN,
-                                ullDeadlineMs);
+                                ullDeadlineMs, iCancelFd);
         if (IPSEC_OK == eError) {
             if (bSend) {
                 lResult = send(iSocket, pucData + uiOffset,
@@ -185,8 +189,12 @@ IpsecError_t ConnectViciTransport(IpsecContext_t *pContext)
                     else if (EINPROGRESS == errno) {
                         ullDeadlineMs = GetIpsecMonotonicMilliseconds() +
                                         pContext->uiConnectTimeoutMs;
+                        if ((0U != pContext->ullCommandDeadlineMs) &&
+                            (pContext->ullCommandDeadlineMs < ullDeadlineMs)) {
+                            ullDeadlineMs = pContext->ullCommandDeadlineMs;
+                        }
                         eError = WaitViciSocket(pContext->iViciSocket, POLLOUT,
-                                                ullDeadlineMs);
+                                                ullDeadlineMs, pContext->iTransportCancelFd);
                         if (IPSEC_OK == eError) {
                             iResult = (int32_t)getsockopt(
                                 pContext->iViciSocket, SOL_SOCKET, SO_ERROR,
@@ -262,12 +270,12 @@ IpsecError_t SendViciTransportPacket(
             eError = TransferViciBytes(pContext->iViciSocket,
                                        (uint8_t *)&uiNetworkLength,
                                        sizeof(uiNetworkLength), true,
-                                       ullDeadlineMs);
+                                       ullDeadlineMs, pContext->iTransportCancelFd);
             if (IPSEC_OK == eError) {
                 eError = TransferViciBytes(pContext->iViciSocket,
                                            pPacket->pucData,
                                            pPacket->uiLength, true,
-                                           ullDeadlineMs);
+                                           ullDeadlineMs, pContext->iTransportCancelFd);
             }
             else {
                 /* Preserve header send error. */
@@ -306,7 +314,7 @@ IpsecError_t ReceiveViciTransportPacket(
         eError = TransferViciBytes(pContext->iViciSocket,
                                    (uint8_t *)&uiNetworkLength,
                                    sizeof(uiNetworkLength), false,
-                                   ullDeadlineMs);
+                                   ullDeadlineMs, pContext->iTransportCancelFd);
         if (IPSEC_OK == eError) {
             uiPacketLength = ntohl(uiNetworkLength);
             if ((0U == uiPacketLength) ||
@@ -314,13 +322,13 @@ IpsecError_t ReceiveViciTransportPacket(
                 eError = IPSEC_ERR_VICI_PROTOCOL;
             }
             else {
-                eError = InitializeViciBuffer(pPacket, uiPacketLength, false);
+                eError = InitializeViciBuffer(pPacket, uiPacketLength, true);
                 if (IPSEC_OK == eError) {
                     pPacket->uiLength = uiPacketLength;
                     eError = TransferViciBytes(pContext->iViciSocket,
                                                pPacket->pucData,
                                                uiPacketLength, false,
-                                               ullDeadlineMs);
+                                               ullDeadlineMs, pContext->iTransportCancelFd);
                 }
                 else {
                     /* Preserve allocation error. */
@@ -341,4 +349,13 @@ IpsecError_t ReceiveViciTransportPacket(
     }
 
     return eError;
+}
+
+
+IpsecError_t WaitViciTransportReadable(
+    IpsecContext_t *pContext,
+    uint64_t ullDeadlineMs)
+{
+    return WaitViciSocket(pContext->iViciSocket, POLLIN, ullDeadlineMs,
+                          pContext->iTransportCancelFd);
 }

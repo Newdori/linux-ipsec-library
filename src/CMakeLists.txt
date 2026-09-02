@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.16)
 project(linux_ipsec_library VERSION 0.1.0 LANGUAGES C)
 
 option(IPSEC_BUILD_TESTS "Build host unit tests" ON)
+option(IPSEC_BUILD_APP "Build the interactive packet-path diagnostic application" ON)
+option(IPSEC_BUILD_LIVE_TESTS "Build opt-in privileged datapath diagnostic (not a CTest)" OFF)
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
@@ -30,11 +32,28 @@ set(IPSEC_SOURCES
     ike/vici/vici_sa.c
     ike/vici/vici_stats.c
     ike/vici/vici_transport.c
+    ike/vici/vici_wait.c
     datapath/common/datapath.c
+    datapath/common/datapath_health.c
+    datapath/common/packet_path.c
+    datapath/kernel_libipsec/kernel_libipsec_datapath.c
     datapath/kernel_libipsec/kernel_libipsec_status.c
+    datapath/kernel_libipsec/kernel_libipsec_tun.c
+    datapath/xfrm/xfrm_backend.c
     datapath/xfrm/xfrm_policy.c
     datapath/xfrm/xfrm_state.c
     datapath/xfrm/xfrm_stats.c
+    datapath/protected/protected_path.c
+    datapath/protected/system_protected_path.c
+    datapath/protected/application_protected_path.c
+    datapath/protected/application_protected_tun.c
+    datapath/protected/application_protected_filter.c
+    datapath/protected/application_protected_netlink.c
+    datapath/protected/protected_packet.c
+    datapath/plain/plain_path.c
+    datapath/plain/system_plain_path.c
+    datapath/plain/application_plain_path.c
+    datapath/plain/plain_netfilter.c
     network/address.c
     network/interface.c
     network/route.c)
@@ -48,14 +67,19 @@ target_include_directories(ipsec_objects
         ${CMAKE_CURRENT_SOURCE_DIR}/ike/vici
         ${CMAKE_CURRENT_SOURCE_DIR}/datapath/common
         ${CMAKE_CURRENT_SOURCE_DIR}/datapath/kernel_libipsec
+        ${CMAKE_CURRENT_SOURCE_DIR}/datapath/protected
+        ${CMAKE_CURRENT_SOURCE_DIR}/datapath/plain
         ${CMAKE_CURRENT_SOURCE_DIR}/datapath/xfrm
         ${CMAKE_CURRENT_SOURCE_DIR}/network)
 target_compile_options(ipsec_objects PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(ipsec_objects PRIVATE Threads::Threads)
 
 add_library(ipsec_static STATIC $<TARGET_OBJECTS:ipsec_objects>)
 add_library(ipsec_shared SHARED $<TARGET_OBJECTS:ipsec_objects>)
-set_target_properties(ipsec_static PROPERTIES OUTPUT_NAME ipsec)
-set_target_properties(ipsec_shared PROPERTIES OUTPUT_NAME ipsec)
+set_target_properties(ipsec_static PROPERTIES OUTPUT_NAME ipsecctrl)
+set_target_properties(ipsec_shared PROPERTIES
+    OUTPUT_NAME ipsecctrl VERSION ${PROJECT_VERSION} SOVERSION 0
+    BUILD_WITH_INSTALL_RPATH TRUE)
 target_include_directories(ipsec_static PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_include_directories(ipsec_shared PUBLIC
@@ -65,12 +89,41 @@ target_link_libraries(ipsec_shared PUBLIC Threads::Threads)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(ipsec_shared PRIVATE
-        "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/libipsec.map")
+        "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/libipsecctrl.map")
 endif()
 
 set_target_properties(ipsec_static ipsec_shared PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
+if(NOT DEFINED CMAKE_INSTALL_LIBDIR)
+    set(CMAKE_INSTALL_LIBDIR "lib" CACHE PATH "Library installation directory")
+endif()
+include(GNUInstallDirs)
+install(TARGETS ipsec_static ipsec_shared
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(FILES ../include/ipsec.h ../include/ipsec_types.h ../include/ipsec_error.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ipsecctrl)
+
+if(IPSEC_BUILD_LIVE_TESTS)
+    add_executable(test_live_datapath ../tests/integration/test_live_datapath.c)
+    target_compile_definitions(test_live_datapath PRIVATE _POSIX_C_SOURCE=200809L)
+    target_link_libraries(test_live_datapath PRIVATE ipsec_static)
+    target_compile_options(test_live_datapath PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+if(IPSEC_BUILD_APP)
+    add_executable(ipsec_app
+        ../app/main.c ../app/cli.c ../app/command.c ../app/config.c
+        ../app/datapath.c ../app/packet.c ../app/lifecycle.c ../app/peer.c
+        ../app/state.c ../app/show.c ../app/algorithm_capability.c
+        ../app/algorithm_catalog.c ../app/algorithm_report.c ../app/algorithm_runner.c)
+    target_compile_definitions(ipsec_app PRIVATE _POSIX_C_SOURCE=200809L)
+    target_compile_options(ipsec_app PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(ipsec_app PRIVATE ipsec_static Threads::Threads ${CMAKE_DL_LIBS})
+    set_target_properties(ipsec_app PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+endif()
 
 if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     enable_testing()
@@ -79,9 +132,13 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     foreach(TestName IN ITEMS
             test_vici_packet
             test_vici_stats
+            test_vici_session
             test_xfrm_stats
             test_xfrm_netlink
             test_route_netlink
+            test_tun_discovery
+            test_protected_filter
+            test_plain_netfilter
             test_psk_generate)
         add_executable(${TestName}
             ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/${TestName}.c)
@@ -92,13 +149,52 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
             ${CMAKE_CURRENT_SOURCE_DIR}/datapath/common
             ${CMAKE_CURRENT_SOURCE_DIR}/datapath/kernel_libipsec
             ${CMAKE_CURRENT_SOURCE_DIR}/datapath/xfrm
+            ${CMAKE_CURRENT_SOURCE_DIR}/datapath/protected
+            ${CMAKE_CURRENT_SOURCE_DIR}/datapath/plain
             ${CMAKE_CURRENT_SOURCE_DIR}/network)
         target_compile_definitions(${TestName} PRIVATE
             _POSIX_C_SOURCE=200809L)
         target_compile_options(${TestName} PRIVATE -Wall -Wextra -Wpedantic -Werror)
         target_link_libraries(${TestName} PRIVATE ipsec_static)
         add_test(NAME ${TestName} COMMAND ${TestName})
+        set_tests_properties(${TestName} PROPERTIES TIMEOUT 30)
     endforeach()
+
+    # Compile the real managers/packet codec with deterministic OS/VICI seams.
+    # No test-only hook or global mock is linked into the production library.
+    add_executable(test_datapath_ops ../tests/unit/test_datapath_ops.c
+        datapath/common/datapath.c datapath/common/datapath_health.c
+        datapath/common/packet_path.c
+        datapath/protected/protected_path.c
+        datapath/protected/system_protected_path.c
+        datapath/protected/application_protected_path.c
+        datapath/protected/protected_packet.c
+        datapath/plain/plain_path.c datapath/plain/system_plain_path.c
+        datapath/plain/application_plain_path.c)
+    target_include_directories(test_datapath_ops PRIVATE ../include)
+    target_compile_definitions(test_datapath_ops PRIVATE _POSIX_C_SOURCE=200809L)
+    target_compile_options(test_datapath_ops PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(test_datapath_ops PRIVATE Threads::Threads)
+    add_test(NAME test_datapath_ops COMMAND test_datapath_ops)
+
+    add_executable(test_shared_link ../tests/unit/test_shared_link.c)
+    target_link_libraries(test_shared_link PRIVATE ipsec_shared)
+    target_compile_options(test_shared_link PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME test_shared_link COMMAND test_shared_link)
+
+    # Compile only this test's packet object with an instrumented free; do not
+    # add allocator hooks or a linker-specific --wrap dependency to production.
+    add_library(test_sensitive_packet OBJECT ike/vici/vici_packet.c)
+    target_include_directories(test_sensitive_packet PRIVATE ../include)
+    target_compile_definitions(test_sensitive_packet PRIVATE free=TrackTestFree)
+    target_compile_options(test_sensitive_packet PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_executable(test_sensitive_buffer ../tests/unit/test_sensitive_buffer.c
+        $<TARGET_OBJECTS:test_sensitive_packet>)
+    target_include_directories(test_sensitive_buffer PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/ike/vici)
+    target_compile_options(test_sensitive_buffer PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(test_sensitive_buffer PRIVATE ipsec_static)
+    add_test(NAME test_sensitive_buffer COMMAND test_sensitive_buffer)
 
     add_executable(test_algorithm_validation
         ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_algorithm_validation.c
@@ -142,6 +238,22 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     target_compile_options(test_app_command PRIVATE
         -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME test_app_command COMMAND test_app_command)
+
+    add_executable(test_app_datapath ../tests/unit/test_app_datapath.c
+        ../app/config.c ../app/datapath.c ../app/command.c)
+    add_executable(test_app_packet ../tests/unit/test_app_packet.c ../app/packet.c)
+    foreach(TestName IN ITEMS test_app_datapath test_app_packet)
+        target_include_directories(${TestName} PRIVATE ../include ../app)
+        target_compile_definitions(${TestName} PRIVATE _POSIX_C_SOURCE=200809L)
+        target_compile_options(${TestName} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        target_link_libraries(${TestName} PRIVATE Threads::Threads)
+        add_test(NAME ${TestName} COMMAND ${TestName})
+        set_tests_properties(${TestName} PROPERTIES TIMEOUT 10)
+    endforeach()
+    if(IPSEC_BUILD_APP)
+        add_test(NAME test_app_help COMMAND ipsec_app --help)
+        set_tests_properties(test_app_help PROPERTIES TIMEOUT 10)
+    endif()
 
     add_executable(test_cpp_header
         ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_cpp_header.cpp)

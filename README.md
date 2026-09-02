@@ -1,79 +1,299 @@
-# linux-ipsec-library
+# Linux IPsec Control Library
 
-`linux-ipsec-library` is a reusable C11 IPsec control and status library for
-Linux. It communicates with a separately running strongSwan `charon` daemon
-through the VICI Unix-domain-socket protocol and reads kernel state through
-Linux Netlink and `/proc` interfaces.
+`libipsecctrl` is a C11 control/status library for strongSwan and Linux IPsec.
+It talks to an already-running `charon` process through the VICI Unix-domain
+protocol and reads Linux networking state through Netlink and `/proc`. It does
+not run `swanctl`, `ip`, shell commands, or service-management commands, and it
+does not link strongSwan GPL libraries.
 
-The library does not invoke `swanctl`, `ipsec`, `ip`, `systemctl`, or other
-command-line tools. It also does not link to strongSwan GPL libraries.
+The project currently provides:
 
-## Current implementation
+- VICI connection, PSK credential, IKE SA, and CHILD SA control;
+- IKE/CHILD/connection/algorithm/daemon status as C structures;
+- Linux XFRM state, policy, and statistics queries;
+- interface, address, and route queries through `NETLINK_ROUTE`;
+- XFRM and strongSwan kernel-libipsec datapath detection;
+- independent protected-packet and plain-packet delivery paths;
+- static and shared libraries named `libipsecctrl.a` and `libipsecctrl.so`;
+- an interactive diagnostic application named `ipsec_app`.
 
-- VICI connection, configuration, credential, IKE SA, CHILD SA, algorithm,
-  and daemon-status operations
-- Read-only `NETLINK_XFRM` state and policy queries
-- `/proc/net/xfrm_stat` parsing
-- Read-only `NETLINK_ROUTE` interface, address, and route queries
-- Runtime datapath detection for the Linux XFRM and strongSwan
-  `kernel-libipsec` backends
-- `kernel-libipsec` TUN-interface and route readiness inspection
-- PSK file generation and secure sensitive-buffer clearing
-- Interactive `ipsec_app` for configuration, connection, credential, IKE,
-  CHILD, peer, status, loop, and algorithm test operations
-- Static and shared library outputs: `libipsec.a` and `libipsec.so`
+The library does not implement IKEv2 or ESP cryptography. IKEv2 remains in
+`charon`; ESP processing remains in the selected XFRM or kernel-libipsec
+backend.
 
-The `src/datapath/kernel_libipsec` directory contains status and validation
-logic for strongSwan's separately running `kernel-libipsec` plugin. The
-library does not copy or link strongSwan GPL code. The `src/crypto` directory
-remains the reserved boundary for a future KCMVP provider integration and is
-not part of the current build.
+## Architecture
 
-## GNU Make build
-
-Run from the `src` directory on Ubuntu Linux:
-
-```sh
-make             # host and ZynqMP
-make host        # host only
-make zynqmp      # ZynqMP only
-make clean       # remove all outputs
-make host clean  # remove host outputs only
-make zynqmp clean
+```text
+Application
+    |
+    +-- Control API ---------------- VICI ---------------- charon
+    |
+    +-- Protected packet I/O layer
+    |
+    +-- Plain packet delivery layer
+    |
+libipsecctrl
+    |
+    +-- XFRM backend ---------------- Linux XFRM
+    |
+    +-- kernel-libipsec backend ----- charon/libipsec + charon TUN
 ```
 
-The host results are written to `lib/x86_64/` and ZynqMP results to
-`lib/zynqmp/`. Object files use `src/.build/` temporarily and are removed only
-after both library files have been generated successfully.
+Three choices are independent:
 
-The default cross compiler is `aarch64-linux-gnu-gcc`. It may be overridden:
+1. Datapath backend: `XFRM` or `kernel-libipsec`.
+2. Protected packet path: `SYSTEM` or `APPLICATION`.
+3. Plain packet path: `SYSTEM` or `APPLICATION`.
 
-```sh
-make zynqmp ZYNQMP_CC=/path/to/aarch64-linux-gnu-gcc
+The backend answers **who performs ESP authentication, anti-replay,
+encryption/decryption, and encapsulation**. A packet path answers **where the
+processed packet is delivered**. `SYSTEM` does not mean that the kernel performs
+ESP. For example, kernel-libipsec performs ESP in strongSwan user space while a
+`SYSTEM` path still uses the normal Linux network path.
+
+### Packet-path combinations
+
+| Protected | Plain | Transmit behavior | Receive behavior |
+|---|---|---|---|
+| SYSTEM | SYSTEM | ESP continues to normal network egress | Plain inner packet continues to Linux stack |
+| APPLICATION | SYSTEM | Application receives completed outer IPv4/ESP packet | Plain inner packet continues to Linux stack |
+| SYSTEM | APPLICATION | ESP continues to normal network egress | Application receives the decrypted inner IPv4 packet |
+| APPLICATION | APPLICATION | Application receives completed ESP packet | Application submits ESP and receives the decrypted inner IPv4 packet |
+
+All four choices are accepted with either backend, for eight configuration
+combinations. `SYSTEM/SYSTEM` is the default and retains ordinary Linux IPsec
+behavior.
+
+An `APPLICATION` path does not move ESP cryptography into the calling program.
+Application-specific processing between receive and submit calls is outside this
+library.
+
+## Public packet APIs
+
+```c
+IpsecError_t ReceiveIpsecProtectedPacket(
+    IpsecContext_t *pContext,
+    IpsecProtectedPacket_t *pPacket,
+    uint32_t uiTimeoutMs);
+
+IpsecError_t SubmitIpsecProtectedPacket(
+    IpsecContext_t *pContext,
+    const IpsecProtectedPacket_t *pPacket);
+
+IpsecError_t ReceiveIpsecPlainPacket(
+    IpsecContext_t *pContext,
+    IpsecPlainPacket_t *pPacket,
+    uint32_t uiTimeoutMs);
+
+IpsecError_t GetIpsecPacketPathStatus(
+    IpsecContext_t *pContext,
+    IpsecPacketPathStatus_t *pStatus);
 ```
 
-## CMake build
+`ReceiveIpsecProtectedPacket()` returns a complete outbound packet containing
+the outer IPv4 header and raw ESP. `SubmitIpsecProtectedPacket()` accepts the
+same complete raw ESP packet in the inbound direction. The library validates
+framing and configured peer scope; the selected backend validates SPI,
+authentication, anti-replay, and encryption state.
 
-The single helper script configures, builds, and copies the libraries:
+`ReceiveIpsecPlainPacket()` returns the **entire authenticated, decrypted, and
+decapsulated inner IPv4 packet**, not only its TCP/UDP/ICMP payload:
 
-```sh
-./cmake_build.sh host
-./cmake_build.sh zynqmp
-./cmake_build.sh all
-./cmake_build.sh clean
+```text
+Inner IPv4 header | transport header | application payload
 ```
 
-Host CMake builds also run the unit tests. Failed builds keep their temporary
-directory for diagnosis; successful builds remove it.
+The caller owns each packet buffer. No packet API allocates a per-packet output
+buffer. The current protected implementation requires a 65,535-byte buffer to
+ensure a TUN read is never silently truncated. The plain API reports
+`IPSEC_ERR_BUFFER_TOO_SMALL` if the caller-provided capacity is insufficient.
+IPv6 plain delivery and protected UDP encapsulation are not implemented and
+return explicit errors.
 
-## Interactive application
+Calling a packet API while its corresponding path is `SYSTEM` returns
+`IPSEC_ERR_PACKET_PATH_MISMATCH`.
 
-Build the application from the `app` directory. The application build first
-builds the matching static library and then links only against the public API.
+## Protected APPLICATION implementation
+
+The implementation reuses the existing scoped TC/TUN mechanism:
+
+1. the application supplies a dedicated physical egress interface and one
+   literal outer IPv4 peer pair;
+2. the OS supplies an empty `clsact` qdisc;
+3. the library creates a non-persistent protected-path TUN;
+4. scoped TC filters redirect matching raw ESP from physical egress to that
+   TUN with stolen semantics, so the packet is not cloned to the NIC;
+5. the receive API reads the complete packet from the TUN;
+6. the submit API validates and writes the inbound packet to the protected TUN.
+
+The library owns only its TUN and reserved filters. It does not add routes,
+addresses, firewall rules, or qdiscs. The two configured TC priorities must be
+reserved exclusively for the context. Stop traffic and terminate affected SAs
+before context destruction; cleanup restores ordinary egress behavior.
+
+This first implementation is IPv4 raw ESP only. NAT-T/UDP-encapsulated ESP,
+fragmented outer IPv4, hardware-offloaded XFRM SAs, and 1:N peer scope on one
+protected APPLICATION context are rejected. kernel-libipsec protected delivery
+requires strongSwan 5.9.11 or newer with the plugin's raw-ESP support enabled.
+These requirements do not apply to a `SYSTEM` protected path.
+
+## Plain APPLICATION implementation
+
+Plain delivery uses raw `NETLINK_NETFILTER`/NFQUEUE without linking a GPL
+netfilter client library. The application selects a nonzero queue number. An
+OS administrator must provision one exact post-decrypt rule before library
+initialization:
+
+- XFRM backend: select only inbound packets carrying the matching inbound IPsec
+  policy and enqueue them after successful XFRM decapsulation.
+- kernel-libipsec backend: select only packets entering from the discovered or
+  configured charon-owned TUN and enqueue them.
+
+Do not configure a queue-bypass/accept fallback for this path. The library
+copies a validated complete IPv4 packet and then sends an `NF_DROP` verdict.
+Consequently a successfully returned packet belongs to the application and is
+not also delivered through the Linux stack. Malformed, truncated, wrong-TUN,
+IPv6, and undersized-buffer cases are rejected; queued packets with a usable ID
+are dropped even when parsing fails.
+
+The library deliberately does not create firewall rules. Queue binding proves
+that the local queue endpoint is ready; it cannot prove that an administrator's
+rule selects only authenticated post-decrypt traffic. The rule and network
+namespace are therefore part of the trusted deployment boundary. For XFRM,
+policy selection must be verified in the actual kernel. For kernel-libipsec,
+the library also checks the NFQUEUE ingress ifindex against the selected charon
+TUN.
+
+Relevant implementation background is documented by the
+[strongSwan kernel-libipsec plugin](https://docs.strongswan.org/docs/latest/plugins/kernelLibipsec.html),
+[strongSwan traffic dump guidance](https://docs.strongswan.org/docs/latest/howtos/trafficDumps.html),
+and the [Linux NFQUEUE Netlink specification](https://docs.kernel.org/netlink/specs/nfnetlink_queue.html).
+
+Plain APPLICATION requires continuous queue draining. Treat an application
+exit, queue overflow, or missing queue consumer as fail-closed packet loss and
+monitor it operationally.
+
+## Datapath configuration
+
+```c
+IpsecDatapathConfig_t Datapath = {
+    .uiStructSize = sizeof(Datapath),
+    .ePreference = IPSEC_DATAPATH_PREFER_XFRM,
+    .eProtectedPacketPath = IPSEC_PACKET_PATH_SYSTEM,
+    .ePlainPacketPath = IPSEC_PACKET_PATH_SYSTEM
+};
+```
+
+`IPSEC_DATAPATH_PREFER_AUTO` probes kernel-libipsec first and then XFRM only
+when the former is absent. An ambiguous or inconsistent kernel-libipsec setup
+is an error, not a silent backend change. The library never changes the backend
+loaded inside `charon`.
+
+For kernel-libipsec, an empty `acKernelLibipsecTunName` preserves automatic TUN
+discovery. A nonempty value selects an existing interface and validates its
+existence, TUN kind, UP state, route coverage, and backend consistency. The
+library never creates or renames charon's TUN and never assumes a fixed TUN
+name.
+
+Protected APPLICATION additionally uses:
+
+```text
+acProtectedInterfaceName
+acProtectedEgressInterfaceName
+acProtectedLocalAddress
+acProtectedRemoteAddress
+usProtectedFilterPriority
+```
+
+Plain APPLICATION additionally requires:
+
+```text
+usPlainQueueNumber
+```
+
+`GetIpsecDatapathStatusEx()` reports backend readiness, both path modes, both
+path readiness states, installed CHILD count, and a local `bTrafficReady`
+condition. Readiness is not proof of peer reachability or end-to-end packet
+delivery. XFRM-only status APIs return backend mismatch when kernel-libipsec is
+active instead of returning misleading empty data.
+
+## Control API example
+
+```c
+IpsecContext_t *pContext = NULL;
+IpsecConfig_t Config = {
+    .uiStructSize = sizeof(Config),
+    .pcViciSocketPath = "/run/charon.vici"
+};
+IpsecDatapathConfig_t Datapath = {
+    .uiStructSize = sizeof(Datapath),
+    .ePreference = IPSEC_DATAPATH_PREFER_XFRM,
+    .eProtectedPacketPath = IPSEC_PACKET_PATH_SYSTEM,
+    .ePlainPacketPath = IPSEC_PACKET_PATH_SYSTEM
+};
+
+IpsecError_t eError = InitializeIpsecWithDatapath(
+    &pContext, &Config, &Datapath);
+if (IPSEC_OK == eError) {
+    /* Add connection/PSK, initiate IKE/CHILD, query status. */
+    DeinitializeIpsec(pContext);
+}
+```
+
+VICI, context, connection, credential, SA, wait, logger, ownership, and
+diagnostic contracts remain in the public headers. `charon` must already be
+running and expose VICI. The library never starts or stops it.
+
+## Diagnostic application
+
+The split example files are under `app/config/`. New packet-path keys are:
+
+```text
+datapath_backend=auto
+protected_packet_path=system
+plain_packet_path=system
+kernel_libipsec_tun=
+
+# Protected APPLICATION only
+protected_interface=ipsec-path
+protected_egress_interface=eth0
+protected_local_ip=192.0.2.1
+protected_remote_ip=192.0.2.2
+protected_filter_priority=32000
+
+# Plain APPLICATION only
+plain_queue_number=32002
+```
+
+No compatibility aliases for previous packet-path names are accepted.
+Packet-path settings are context-wide and require an application restart to
+change.
+
+Interactive commands include:
+
+```text
+show datapath
+show packet-path
+packet protected-receive FILE [--timeout-ms N]
+packet protected-submit FILE
+packet plain-receive FILE [--timeout-ms N]
+```
+
+All ordinary connection, credential, IKE, CHILD, rekey, show, loop, and
+algorithm-test commands remain available. Automated traffic-oriented algorithm
+tests are intended for `SYSTEM/SYSTEM`; packet APPLICATION verification is an
+explicit diagnostic workflow.
+
+## Build
+
+### GNU Make
+
+From `src/`:
 
 ```sh
-make host
-make zynqmp
+make            # host and aarch64/ZynqMP libraries
+make host       # host only
+make zynqmp     # aarch64 only; default compiler aarch64-linux-gnu-gcc
 make clean
 make host clean
 make zynqmp clean
@@ -82,164 +302,82 @@ make zynqmp clean
 Outputs:
 
 ```text
-app/bin/x86_64/ipsec_app
-app/bin/zynqmp/ipsec_app
+lib/x86_64/libipsecctrl.a
+lib/x86_64/libipsecctrl.so
+lib/zynqmp/libipsecctrl.a
+lib/zynqmp/libipsecctrl.so
 ```
 
-Start with split application and management configuration files:
+Temporary object trees are removed after successful library creation.
+
+From `app/`, `make` builds the required host library first and then creates
+`app/bin/x86_64/ipsec_app`. `make zynqmp` does the same for the aarch64 target.
+
+### CMake helper
+
+From `src/`:
 
 ```sh
-./bin/x86_64/ipsec_app \
-    --app-config ./config/application_initiator.conf.example \
-    --management-config ./config/management.conf.example
+./cmake_build.sh host
+./cmake_build.sh zynqmp
+./cmake_build.sh all
+./cmake_build.sh clean
 ```
 
-Use `help` at the `ipsec>` prompt to list the interactive commands. The
-application keeps configuration in memory and does not invoke strongSwan or
-Linux networking command-line tools.
+The host helper performs a Release build and runs CTest. Override the aarch64
+compiler with `ZYNQMP_CC=/path/to/aarch64-linux-gnu-gcc`.
 
-## kernel-libipsec backend
-
-`kernel-libipsec` moves ESP packet processing from Linux XFRM into the
-strongSwan `charon` process and sends cleartext packets through a TUN device,
-normally `ipsec0`. It still uses the strongSwan `kernel-netlink` plugin as its
-Linux network backend. Consequently both plugins should appear in the VICI
-daemon status, while XFRM SA and policy entries are not expected.
-
-The administrative initialization script is intentionally separate from the
-library and application. Preview its changes on each endpoint first:
+For a persistent manual build tree:
 
 ```sh
-sudo ./strongswan_script/initialize_strongswan.sh \
-    --dry-run --datapath kernel-libipsec
+cmake -S src -B .build/host \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DIPSEC_BUILD_TESTS=ON \
+    -DIPSEC_BUILD_APP=ON
+cmake --build .build/host --parallel
+ctest --test-dir .build/host --output-on-failure
 ```
 
-Then apply the backend and restart the installed strongSwan service:
+Set `IPSEC_BUILD_LIVE_TESTS=ON` to compile the privileged one-packet diagnostic
+under `tests/integration`. It is intentionally not registered with CTest.
 
-```sh
-sudo ./strongswan_script/initialize_strongswan.sh \
-    --datapath kernel-libipsec --adjust-rp-filter
-```
+## Verification scope
 
-The default uses UDP-encapsulated ESP because that is the most portable
-kernel-libipsec configuration. `--raw-esp` may be used only with strongSwan
-5.9.11 or newer after the target network has been checked. Host-to-host
-selectors that include the IKE peer are enabled by default; use
-`--no-allow-peer-ts` only when traffic selectors are separate from peer
-addresses.
+Unit tests cover VICI codecs/session serialization, XFRM and route parsers,
+kernel-libipsec TUN selection, protected filter construction, NFQUEUE inner-IPv4
+validation, app config/commands, error paths, rollback, cleanup, and the eight
+backend/path dispatch combinations with deterministic OS seams.
 
-After starting `ipsec_app`, verify backend selection before loading a
-connection:
+The eight-combination test validates configuration selection, dispatch,
+mode-mismatch errors, status, backend mismatch, partial-initialization rollback,
+and idempotent cleanup. It does not prove actual encryption, decryption, TC
+redirect, NFQUEUE hook placement, no-clone behavior, or packet content across
+two Linux hosts.
 
-```text
-ipsec> show daemon detail
-ipsec> show datapath
-```
+Before production use, run privileged Linux live tests for every intended
+backend/path combination and verify:
 
-The expected datapath output contains `Backend : kernel-libipsec`,
-`Ready : yes`, an `ipsec0` TUN interface, and at least one route after a CHILD
-SA is installed. `show xfrm` reports `not applicable` for this backend.
+- real VICI connection and IKE/CHILD establishment;
+- protected packet content and absence on ordinary NIC egress;
+- submitted packet authentication/decryption and anti-replay behavior;
+- plain packet equality with the expected entire inner IPv4 packet;
+- absence of duplicate plain delivery to Linux sockets;
+- malformed/authentication-failed/replayed ESP never reaches the plain API;
+- timeout, queue overflow, application crash, rollback, and cleanup behavior;
+- XFRM policy matching or kernel-libipsec TUN ingress selection;
+- reconnect, rekey, repeated lifecycle, and 1:N behavior where applicable.
 
-### Two-endpoint acceptance test
+Current repository verification is **static/unit validated; Linux-live
+validation of the new APPLICATION paths is pending** unless accompanied by a
+separate environment-specific test report.
 
-Start the initiator application first so its peer listener is active, then
-start the responder application. Register the responder and run these commands
-at its prompt:
+## Dependency and license boundary
 
-```text
-peer register
-connection load
-credential load
-show datapath
-show connections detail
-```
+The library links only the platform C and pthread runtimes. It does not link
+`libstrongswan`, `libcharon`, strongSwan `libipsec`, or strongSwan's GPL VICI
+client. Verify a built shared object with `readelf -d`, `ldd`, and `nm -D` in the
+target environment.
 
-At the initiator prompt, select the peer ID printed by `peer show` and run:
-
-```text
-peer show
-peer select rcst-GROUP_ID-LOGON_ID
-connection load
-credential load
-ike initiate
-ike wait
-child initiate
-child wait
-show summary detail
-show datapath
-show ike detail
-show child detail
-```
-
-Send traffic matching the configured traffic selectors from a separate shell
-on either endpoint, then run `show child detail` on both endpoints. Packet and
-byte counters must increase. Finally exercise rekey and repeated cleanup:
-
-```text
-child rekey
-child wait
-ike rekey
-ike wait
-down
-test loop --count 10 --delay-ms 1000
-up
-show summary detail
-```
-
-The loop test validates IKE and CHILD objects for both backends. With XFRM it
-also requires matching XFRM states and policies; with kernel-libipsec it
-requires the active `ipsec0` interface and a route through that interface.
-Because the TUN device is shared by the daemon, cleanup waits for the test IKE
-and CHILD objects to disappear and does not require `ipsec0` itself to be
-removed.
-
-The loop owns every connection and SA it creates, so it rejects a selected
-peer that still has a loaded connection, established IKE SA, or installed
-CHILD SA. Run `down` first. Credentials are retained by default. Use
-`--unload-credential` only to unload the selected peer PSK after the loop.
-`credential clear all` is deliberately explicit because it removes every
-credential loaded through VICI and must not be used during normal 1:N
-operation.
-
-For one automated ESP acceptance case, leave the responder waiting with:
-
-```text
-ipsec> test algorithm serve --port 39001
-```
-
-Then run this at the initiator. The generated schema-version-7 `results.json`
-records the exact negotiated proposals, local and peer errors, failure stage,
-IKE/ESP/install/data-path phase results, packet/byte counters, and
-`datapath=kernel-libipsec`. It records the observed TUN route count instead of
-claiming that XFRM objects exist:
-
-```text
-ipsec> test algorithm run baseline --limit 1 --port 39001
-```
-
-If initialization fails, collect these diagnostics before restoring the
-previous backend:
-
-```sh
-systemctl status strongswan.service --no-pager -l
-journalctl -u strongswan.service -b --no-pager -n 200
-swanctl --stats
-```
-
-These commands are deployment diagnostics only and are never executed by the
-library or application.
-
-## Runtime requirements
-
-- Linux with VICI-enabled strongSwan `charon`
-- A VICI socket, normally `/run/charon.vici` or `/var/run/charon.vici`
-- Appropriate permissions for VICI and Netlink status operations
-
-See `include/ipsec.h` for the public API. Internal VICI and Netlink structures
-are not exposed through the public headers.
-
-## License boundary
-
-This project is licensed under Apache License 2.0. strongSwan and the Linux
-kernel remain separate programs and retain their respective licenses. See
-`NOTICE` and `THIRD_PARTY_NOTICES.md` for distribution notes.
+Project licensing and dependency notices are in `LICENSE`, `NOTICE`, and
+`THIRD_PARTY_NOTICES.md`. Shipping strongSwan, Linux, PetaLinux, or other
+components creates separate compliance obligations for those components.

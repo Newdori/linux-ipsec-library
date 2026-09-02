@@ -165,11 +165,12 @@ static uint64_t GetXfrmErrorTotal(const IpsecXfrmStatistics_t *pStats)
 }
 
 static void SaveXfrmStatistics(
+    IpsecContext_t *pContext,
     const char *pcDirectory,
     const char *pcName)
 {
     IpsecXfrmStatistics_t Stats = {0};
-    IpsecError_t eError = GetIpsecXfrmStatistics(&Stats);
+    IpsecError_t eError = GetIpsecBackendXfrmStatistics(pContext, &Stats);
     FILE *pFile = OpenReportFile(pcDirectory, pcName, "w");
 
     if (NULL != pFile) {
@@ -471,7 +472,7 @@ IpsecError_t WriteNativeAppAlgorithmRunReport(
                          "daemon_status_initial.txt");
         SaveAlgorithms(pContext, pcResultDirectory);
         SaveNetwork(pcResultDirectory);
-        SaveXfrmStatistics(pcResultDirectory, "xfrm_statistics_initial.txt");
+        SaveXfrmStatistics(pContext, pcResultDirectory, "xfrm_statistics_initial.txt");
         pFile = OpenReportFile(pcResultDirectory, "matrix_summary.csv", "w");
         if (NULL != pFile) {
             (void)fputs(
@@ -494,7 +495,7 @@ IpsecError_t WriteNativeAppAlgorithmRunReport(
     else {
         SaveDaemonStatus(pContext, pcResultDirectory,
                          "daemon_status_final.txt");
-        SaveXfrmStatistics(pcResultDirectory, "xfrm_statistics_final.txt");
+        SaveXfrmStatistics(pContext, pcResultDirectory, "xfrm_statistics_final.txt");
         SaveFinalState(pContext, pcResultDirectory);
     }
     return IPSEC_OK;
@@ -759,7 +760,7 @@ IpsecError_t CaptureNativeAppAlgorithmCaseReport(
         }
         (void)fclose(pFile);
     }
-    SaveXfrmStatistics(pcCaseDirectory, "xfrm_statistics_active.txt");
+    SaveXfrmStatistics(pContext, pcCaseDirectory, "xfrm_statistics_active.txt");
     FreeIpsecXfrmPolicyList(&Policies);
     FreeIpsecXfrmStateList(&States);
     return ((IPSEC_OK == eState) && (IPSEC_OK == ePolicy)) ?

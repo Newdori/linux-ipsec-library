@@ -2,6 +2,7 @@
 #define IPSEC_TYPES_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -40,6 +41,8 @@ typedef enum IpsecAuthMethod {
     IPSEC_AUTH_CERTIFICATE,
     IPSEC_AUTH_EAP
 } IpsecAuthMethod_t;
+/* Certificate/EAP values reserve the API vocabulary. AddIpsecConnection
+ * currently accepts PSK only; no certificate/private-key loader is provided. */
 
 typedef enum IpsecEsnMode {
     IPSEC_ESN_AUTO = 0,
@@ -90,6 +93,77 @@ typedef struct IpsecConfig {
     void *pvLogUserData;
 } IpsecConfig_t;
 
+/* Separate extension: the layout of IpsecConfig_t remains ABI compatible. */
+typedef enum IpsecDatapathPreference {
+    IPSEC_DATAPATH_PREFER_AUTO = 0,
+    IPSEC_DATAPATH_PREFER_XFRM,
+    IPSEC_DATAPATH_PREFER_KERNEL_LIBIPSEC
+} IpsecDatapathPreference_t;
+
+typedef enum IpsecPacketPathMode {
+    IPSEC_PACKET_PATH_SYSTEM = 0,
+    IPSEC_PACKET_PATH_APPLICATION
+} IpsecPacketPathMode_t;
+
+#define IPSEC_DATAPATH_NAME_LENGTH 16U
+#define IPSEC_PROTECTED_PACKET_CAPACITY 65535U
+
+typedef struct IpsecDatapathConfig {
+    uint32_t uiStructSize;
+    IpsecDatapathPreference_t ePreference;
+    IpsecPacketPathMode_t eProtectedPacketPath;
+    IpsecPacketPathMode_t ePlainPacketPath;
+    /* Existing charon-owned TUN. Empty means discovery, never creation. */
+    char acKernelLibipsecTunName[IPSEC_DATAPATH_NAME_LENGTH];
+    /* Protected APPLICATION owns a distinct, non-persistent TUN. */
+    char acProtectedInterfaceName[IPSEC_DATAPATH_NAME_LENGTH];
+    /* Dedicated Ethernet egress, with an OS-provisioned clsact qdisc.
+     * APPLICATION diverts only this literal IPv4 outer address pair.
+     * No automatic route, firewall, qdisc or strongSwan configuration changes.
+     */
+    char acProtectedEgressInterfaceName[IPSEC_DATAPATH_NAME_LENGTH];
+    char acProtectedLocalAddress[16];
+    char acProtectedRemoteAddress[16];
+    /* Two consecutive, exclusively reserved TC priorities; zero = 32000.
+     * The application/OS must prevent concurrent changes to these filters.
+     */
+    uint16_t usProtectedFilterPriority;
+    /* Plain APPLICATION binds this pre-provisioned NFQUEUE. Zero is invalid
+     * in APPLICATION mode so accidental queue capture cannot be enabled.
+     * The OS rule must select post-decrypt inbound packets only.
+     */
+    uint16_t usPlainQueueNumber;
+} IpsecDatapathConfig_t;
+
+typedef enum IpsecProtectedPacketType {
+    IPSEC_PROTECTED_PACKET_RAW_ESP = 0,
+    /* Reserved API value. Current packet paths return IPSEC_ERR_PACKET_TYPE. */
+    IPSEC_PROTECTED_PACKET_UDP_ESP
+} IpsecProtectedPacketType_t;
+
+typedef enum IpsecPacketDirection {
+    IPSEC_PACKET_DIRECTION_INBOUND = 0,
+    IPSEC_PACKET_DIRECTION_OUTBOUND
+} IpsecPacketDirection_t;
+
+typedef struct IpsecProtectedPacket {
+    uint32_t uiStructSize;
+    uint8_t *pucData;
+    size_t zCapacity;
+    size_t zLength;
+    IpsecProtectedPacketType_t eType;
+    IpsecPacketDirection_t eDirection;
+} IpsecProtectedPacket_t;
+
+typedef struct IpsecPlainPacket {
+    uint32_t uiStructSize;
+    uint8_t *pucData;
+    size_t zCapacity;
+    size_t zLength;
+    IpsecAddressFamily_t eFamily;
+    IpsecPacketDirection_t eDirection;
+} IpsecPlainPacket_t;
+
 typedef struct IpsecConnectionConfig {
     uint32_t uiStructSize;
     const char *pcName;
@@ -114,7 +188,7 @@ typedef struct IpsecConnectionConfig {
     uint32_t uiDpdDelayMs;
     uint32_t uiDpdTimeoutMs;
     uint64_t ullIkeRekeyTimeMs;
-    uint64_t ullIkeLifetimeMs;
+    uint64_t ullIkeLifetimeMs; /* Legacy name: maps to VICI reauth_time, not life_time. */
     uint64_t ullChildRekeyTimeMs;
     uint64_t ullChildLifetimeMs;
 } IpsecConnectionConfig_t;
@@ -235,6 +309,49 @@ typedef struct IpsecDatapathStatus {
     uint32_t uiTunRouteCount;
     char acTunInterfaceName[IPSEC_INTERFACE_NAME_LENGTH];
 } IpsecDatapathStatus_t;
+
+/* Additive status; legacy IpsecDatapathStatus_t is not enlarged. */
+typedef struct IpsecDatapathStatusEx {
+    uint32_t uiStructSize;
+    IpsecDatapathStatus_t Backend;
+    IpsecPacketPathMode_t eProtectedPacketPath;
+    IpsecPacketPathMode_t ePlainPacketPath;
+    bool bBackendReady;
+    bool bProtectedPathReady;
+    bool bPlainPathReady;
+    /* Necessary local conditions, NOT a peer reachability/traffic proof. */
+    bool bTrafficReady;
+    uint32_t uiInstalledChildCount;
+    uint32_t uiProtectedInterfaceIndex;
+    char acProtectedInterfaceName[IPSEC_DATAPATH_NAME_LENGTH];
+    uint32_t uiPlainInterfaceIndex;
+    char acPlainInterfaceName[IPSEC_DATAPATH_NAME_LENGTH];
+    uint16_t usPlainQueueNumber;
+} IpsecDatapathStatusEx_t;
+
+typedef struct IpsecPacketPathStatus {
+    uint32_t uiStructSize;
+    IpsecPacketPathMode_t eProtectedPacketPath;
+    IpsecPacketPathMode_t ePlainPacketPath;
+    bool bProtectedPathReady;
+    bool bPlainPathReady;
+    uint32_t uiProtectedInterfaceIndex;
+    char acProtectedInterfaceName[IPSEC_DATAPATH_NAME_LENGTH];
+    uint32_t uiPlainInterfaceIndex;
+    char acPlainInterfaceName[IPSEC_DATAPATH_NAME_LENGTH];
+    uint16_t usPlainQueueNumber;
+} IpsecPacketPathStatus_t;
+
+typedef struct IpsecTrafficStatistics {
+    uint32_t uiStructSize;
+    bool bCountersValid;
+    /* XFRM: network-namespace-wide SA totals, not per-context/directional.
+     * kernel-libipsec: NOT_SUPPORTED; use the separate VICI CHILD SA API.
+     */
+    uint64_t ullPackets;
+    uint64_t ullBytes;
+    uint32_t uiSaCount;
+} IpsecTrafficStatistics_t;
 
 typedef struct IpsecXfrmStateInfo {
     IpsecAddressFamily_t eFamily;

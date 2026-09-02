@@ -1,93 +1,44 @@
 #include "kernel_libipsec_internal.h"
 
+#include <linux/rtnetlink.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 
-static IpsecError_t InspectKernelLibipsecInterface(
-    IpsecDatapathStatus_t *pStatus)
+IpsecError_t InspectKernelLibipsecDatapath(IpsecContext_t *pContext,
+                                          IpsecDatapathStatus_t *pStatus)
 {
-    IpsecInterfaceList_t List = {0};
+    IpsecTunCandidates_t *pCandidates = (IpsecTunCandidates_t *)calloc(1U, sizeof(*pCandidates));
+    IpsecRouteList_t Routes = {0};
+    struct ifinfomsg Request = {0};
     IpsecError_t eError;
     uint32_t uiIndex;
-
-    eError = GetIpsecInterfaces(&List);
+    uint32_t uiRoute;
+    const char *pcName = pContext->acDatapathInterfaceName;
+    if (NULL == pCandidates) {
+        return IPSEC_ERR_NO_MEMORY;
+    }
+    if ('\0' == pcName[0]) {
+        pcName = pContext->DatapathConfig.acKernelLibipsecTunName;
+    }
+    Request.ifi_family = AF_UNSPEC;
+    eError = ExecuteNetlinkDump(NETLINK_ROUTE, RTM_GETLINK, &Request,
+        sizeof(Request), ParseIpsecTunMessage, pCandidates);
     if (IPSEC_OK == eError) {
-        for (uiIndex = 0U; uiIndex < List.uiCount; uiIndex++) {
-            const IpsecInterfaceInfo_t *pItem = &List.pItems[uiIndex];
-
-            if (0 == strcmp(KERNEL_LIBIPSEC_TUN_INTERFACE, pItem->acName)) {
-                pStatus->bTunInterfacePresent = true;
-                pStatus->bTunInterfaceUp = pItem->bUp;
-                pStatus->uiTunInterfaceIndex = pItem->uiIndex;
-                eError = CopyIpsecString(
-                    pStatus->acTunInterfaceName,
-                    sizeof(pStatus->acTunInterfaceName),
-                    (const uint8_t *)pItem->acName,
-                    strlen(pItem->acName));
-                break;
-            }
-            else {
-                /* Continue searching for the kernel-libipsec TUN device. */
+        eError = GetIpsecRoutes(&Routes);
+    }
+    if (IPSEC_OK == eError) {
+        for (uiIndex = 0U; uiIndex < pCandidates->uiCount; uiIndex++) {
+            for (uiRoute = 0U; uiRoute < Routes.uiCount; uiRoute++) {
+                if (pCandidates->aItems[uiIndex].uiIndex == Routes.pItems[uiRoute].uiInterfaceIndex) {
+                    pCandidates->aItems[uiIndex].uiRouteCount++;
+                }
             }
         }
+        eError = SelectIpsecTun(pCandidates, pcName,
+            pContext->DatapathConfig.acProtectedInterfaceName, pStatus);
     }
-    else {
-        /* Preserve the NETLINK_ROUTE query error. */
-    }
-    FreeIpsecInterfaceList(&List);
-    return eError;
-}
-
-static IpsecError_t CountKernelLibipsecRoutes(
-    IpsecDatapathStatus_t *pStatus)
-{
-    IpsecRouteList_t List = {0};
-    IpsecError_t eError;
-    uint32_t uiIndex;
-
-    eError = GetIpsecRoutes(&List);
-    if (IPSEC_OK == eError) {
-        for (uiIndex = 0U; uiIndex < List.uiCount; uiIndex++) {
-            const IpsecRouteInfo_t *pItem = &List.pItems[uiIndex];
-
-            if ((0U != pStatus->uiTunInterfaceIndex) &&
-                (pStatus->uiTunInterfaceIndex == pItem->uiInterfaceIndex)) {
-                pStatus->uiTunRouteCount++;
-            }
-            else {
-                /* The route belongs to another network interface. */
-            }
-        }
-    }
-    else {
-        /* Preserve the NETLINK_ROUTE query error. */
-    }
-    FreeIpsecRouteList(&List);
-    return eError;
-}
-
-IpsecError_t InspectKernelLibipsecDatapath(
-    IpsecDatapathStatus_t *pStatus)
-{
-    IpsecError_t eError;
-
-    if (NULL == pStatus) {
-        eError = IPSEC_ERR_INVALID_ARGUMENT;
-    }
-    else {
-        eError = InspectKernelLibipsecInterface(pStatus);
-    }
-    if ((IPSEC_OK == eError) && pStatus->bTunInterfacePresent) {
-        eError = CountKernelLibipsecRoutes(pStatus);
-    }
-    else {
-        /* A missing TUN device is reported as a non-ready status. */
-    }
-    if (IPSEC_OK == eError) {
-        pStatus->bReady = pStatus->bTunInterfacePresent &&
-                          pStatus->bTunInterfaceUp;
-    }
-    else {
-        /* Preserve the route or interface query error. */
-    }
+    FreeIpsecRouteList(&Routes);
+    free(pCandidates);
     return eError;
 }

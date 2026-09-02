@@ -24,9 +24,32 @@ struct IpsecContext {
     uint64_t ullCommandDeadlineMs;
     pthread_mutex_t CommandMutex;
     bool bCommandMutexInitialized;
+    pthread_cond_t CommandCondition;
+    bool bCommandConditionInitialized;
+    bool bCommandActive;
+    bool bClosing;
+    struct ViciWaiter *pWaiters;
+    int32_t iTransportCancelFd;
+    IpsecDiagnostic_t LastDiagnostic;
     IpsecLogCallback_t pLogCallback;
     void *pvLogUserData;
+    IpsecDatapathConfig_t DatapathConfig;
+    IpsecDatapathType_t eActiveDatapath;
+    const struct IpsecDatapathOps *pDatapathOps;
+    const struct IpsecProtectedPathOps *pProtectedPathOps;
+    const struct IpsecPlainPathOps *pPlainPathOps;
+    IpsecError_t eDatapathError;
+    bool bDatapathInitialized;
+    bool bProtectedPathInitialized;
+    bool bPlainPathInitialized;
+    char acDatapathInterfaceName[IPSEC_DATAPATH_NAME_LENGTH];
+    uint32_t uiDatapathInterfaceIndex;
+    /* Packet path implementations own these opaque allocations. */
+    struct IpsecProtectedApplicationState *pProtectedApplicationState;
+    struct IpsecPlainApplicationState *pPlainApplicationState;
 };
+
+void DestroyIpsecContextState(IpsecContext_t *pContext);
 
 IpsecError_t InitializeIpsecContextState(
     IpsecContext_t *pContext,

@@ -14,19 +14,32 @@
 
 typedef uintptr_t (*NativeAppOpenSslVersionFunction_t)(void);
 
-static bool CopyNativeAppCapabilityText(
+bool CopyNativeAppCapabilityText(
     char *pcDestination,
     size_t zDestinationLength,
     const char *pcSource)
 {
-    int32_t iLength;
+    size_t zLength;
 
-    if ((NULL == pcDestination) || (0U == zDestinationLength) ||
-        (NULL == pcSource)) {
+    if ((NULL == pcDestination) || (0U == zDestinationLength)) {
         return false;
     }
-    iLength = snprintf(pcDestination, zDestinationLength, "%s", pcSource);
-    return (0 <= iLength) && ((size_t)iLength < zDestinationLength);
+    if (NULL == pcSource) {
+        pcDestination[0] = '\0';
+        return false;
+    }
+    zLength = strnlen(pcSource, zDestinationLength);
+    if (zLength >= zDestinationLength) {
+        /* Optional identity fields must be complete, never silently truncated.
+         * uname fields may contain 64 characters plus their terminating NUL.
+         */
+        pcDestination[0] = '\0';
+        return false;
+    }
+    else {
+        (void)memmove(pcDestination, pcSource, zLength + 1U);
+        return true;
+    }
 }
 
 static void RemoveNativeAppCapabilityQuotes(char *pcValue)

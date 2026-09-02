@@ -193,6 +193,26 @@ static int32_t TestMalformedXfrmMessage(void)
     }
 }
 
+static int32_t TestXfrmOffloadGuard(void)
+{
+    TestNetlinkBuffer_t Buffer = {0};
+    struct nlmsghdr *pHeader = (struct nlmsghdr *)Buffer.aucData;
+    struct xfrm_user_offload Offload = {0};
+    pHeader->nlmsg_type = XFRM_MSG_NEWSA;
+    pHeader->nlmsg_len = NLMSG_LENGTH(sizeof(struct xfrm_usersa_info));
+    if (IPSEC_OK != InspectXfrmOffload(pHeader, NULL)) {
+        return ReportFailure("software XFRM SA rejected for protected path");
+    }
+    if (!AddTestAttribute(pHeader, sizeof(Buffer.aucData), XFRMA_OFFLOAD_DEV,
+                          &Offload, sizeof(Offload)) ||
+        (IPSEC_ERR_NOT_SUPPORTED != InspectXfrmOffload(pHeader, NULL))) {
+        return ReportFailure("hardware-offloaded XFRM SA allowed for protected path");
+    }
+    pHeader->nlmsg_len = NLMSG_HDRLEN;
+    return (IPSEC_ERR_NETLINK_PARSE == InspectXfrmOffload(pHeader, NULL)) ?
+        0 : ReportFailure("short offload query response accepted");
+}
+
 int main(void)
 {
     int32_t iResult;
@@ -209,6 +229,9 @@ int main(void)
     }
     else {
         /* Preserve first failure. */
+    }
+    if (0 == iResult) {
+        iResult = TestXfrmOffloadGuard();
     }
     return iResult;
 }

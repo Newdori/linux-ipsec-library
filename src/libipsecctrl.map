@@ -3,7 +3,10 @@ IPSEC_0.1 {
         GetIpsecErrorString;
         GenerateIpsecPskFile;
         InitializeIpsec;
+        InitializeIpsecWithDatapath;
         DeinitializeIpsec;
+        CancelIpsecWaits;
+        GetIpsecLastDiagnostic;
         AddIpsecConnection;
         RemoveIpsecConnection;
         GetIpsecConnections;
@@ -27,6 +30,13 @@ IPSEC_0.1 {
         FreeIpsecAlgorithmList;
         GetIpsecDaemonStatus;
         GetIpsecDatapathStatus;
+        GetIpsecDatapathStatusEx;
+        GetIpsecTrafficStatistics;
+        GetIpsecPacketPathStatus;
+        ReceiveIpsecProtectedPacket;
+        SubmitIpsecProtectedPacket;
+        ReceiveIpsecPlainPacket;
+        GetIpsecBackendXfrmStatistics;
         GetIpsecXfrmStates;
         FreeIpsecXfrmStateList;
         GetIpsecXfrmPolicies;
