@@ -1,3 +1,4 @@
 ike_proposals=aes256-sha256-prfsha256-modp2048
 esp_proposals=aes256-sha256
 ipsec_mode=transport
+# Use ipsec_mode=tunnel for the kernel-libipsec backend.

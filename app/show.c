@@ -65,9 +65,12 @@ static const char *GetNativeAppDatapathType(
     return pcType;
 }
 
-static void ShowNativeAppDatapathStatus(
+static IpsecError_t ShowNativeAppDatapathStatus(
+    IpsecContext_t *pContext,
     const IpsecDatapathStatus_t *pStatus)
 {
+    IpsecDatapathStatusEx_t Extended = {.uiStructSize = sizeof(Extended)};
+    IpsecError_t eError;
     (void)printf("[DATAPATH]\n"
                  "  Backend          : %s\n"
                  "  Ready            : %s\n"
@@ -92,6 +95,31 @@ static void ShowNativeAppDatapathStatus(
     else {
         (void)printf("  XFRM SA/Policy   : applicable\n");
     }
+    eError = GetIpsecDatapathStatusEx(pContext, &Extended);
+    if (IPSEC_OK == eError) {
+        (void)printf("  Protected Path   : %s\n"
+                     "  Plain Path       : %s\n"
+                     "  Protected Ready  : %s\n"
+                     "  Plain Ready      : %s\n"
+                     "  Traffic Ready    : %s (local prerequisites only)\n"
+                     "  Installed CHILDs : %" PRIu32 "\n"
+                     "  Protected Iface  : %s\n"
+                     "  Plain Iface      : %s\n"
+                     "  Plain NFQUEUE    : %" PRIu16 "\n",
+            (IPSEC_PACKET_PATH_APPLICATION == Extended.eProtectedPacketPath) ?
+                "APPLICATION" : "SYSTEM",
+            (IPSEC_PACKET_PATH_APPLICATION == Extended.ePlainPacketPath) ?
+                "APPLICATION" : "SYSTEM",
+            Extended.bProtectedPathReady ? "yes" : "no",
+            Extended.bPlainPathReady ? "yes" : "no",
+            Extended.bTrafficReady ? "yes" : "no", Extended.uiInstalledChildCount,
+            ('\0' != Extended.acProtectedInterfaceName[0]) ?
+                Extended.acProtectedInterfaceName : "none",
+            ('\0' != Extended.acPlainInterfaceName[0]) ?
+                Extended.acPlainInterfaceName : "none",
+            Extended.usPlainQueueNumber);
+    }
+    return eError;
 }
 
 static void ShowNativeAppXfrmNotApplicable(const char *pcSection)
@@ -533,10 +561,10 @@ static IpsecError_t ShowNativeAppXfrmPolicies(IpsecContext_t *pContext)
     return eError;
 }
 
-static IpsecError_t ShowNativeAppXfrmStatistics(void)
+static IpsecError_t ShowNativeAppXfrmStatistics(IpsecContext_t *pContext)
 {
     IpsecXfrmStatistics_t Statistics = {0};
-    IpsecError_t eError = GetIpsecXfrmStatistics(&Statistics);
+    IpsecError_t eError = GetIpsecBackendXfrmStatistics(pContext, &Statistics);
 
     if (IPSEC_OK == eError) {
         (void)printf("[XFRM STATISTICS]\n"
@@ -677,6 +705,57 @@ static IpsecError_t ShowNativeAppRoutes(void)
     return eError;
 }
 
+static IpsecError_t ShowNativeAppPacketPath(IpsecContext_t *pContext)
+{
+    IpsecPacketPathStatus_t Status = {.uiStructSize = sizeof(Status)};
+    IpsecError_t eError = GetIpsecPacketPathStatus(pContext, &Status);
+    if (IPSEC_OK == eError) {
+        (void)printf("[PACKET PATH]\n"
+            "  Protected        : %s (%s)\n"
+            "  Protected Iface  : %s (%" PRIu32 ")\n"
+            "  Plain            : %s (%s)\n"
+            "  Plain Iface      : %s (%" PRIu32 ")\n"
+            "  Plain NFQUEUE    : %" PRIu16 "\n",
+            (IPSEC_PACKET_PATH_APPLICATION == Status.eProtectedPacketPath) ?
+                "application" : "system",
+            Status.bProtectedPathReady ? "ready" : "not ready",
+            ('\0' != Status.acProtectedInterfaceName[0]) ?
+                Status.acProtectedInterfaceName : "<OS routing>",
+            Status.uiProtectedInterfaceIndex,
+            (IPSEC_PACKET_PATH_APPLICATION == Status.ePlainPacketPath) ?
+                "application" : "system",
+            Status.bPlainPathReady ? "ready" : "not ready",
+            ('\0' != Status.acPlainInterfaceName[0]) ?
+                Status.acPlainInterfaceName :
+                ((IPSEC_PACKET_PATH_APPLICATION == Status.ePlainPacketPath) ?
+                    "<OS post-decrypt selector>" : "<Linux stack>"),
+            Status.uiPlainInterfaceIndex, Status.usPlainQueueNumber);
+        if (IPSEC_PACKET_PATH_APPLICATION == Status.ePlainPacketPath) {
+            (void)puts("  Selector Check    : external OS rule; not proven by queue readiness");
+        }
+    }
+    return eError;
+}
+
+static IpsecError_t ShowNativeAppTraffic(IpsecContext_t *pContext)
+{
+    IpsecTrafficStatistics_t Stats = {.uiStructSize = sizeof(Stats)};
+    IpsecError_t eError = GetIpsecTrafficStatistics(pContext, &Stats);
+    if (IPSEC_ERR_NOT_SUPPORTED == eError) {
+        (void)puts("[TRAFFIC]\n  Common Counters  : unavailable for this backend\n"
+                   "  Alternative      : show child detail (VICI per-CHILD counters)");
+        return IPSEC_OK;
+    }
+    if (IPSEC_OK == eError) {
+        (void)printf("[TRAFFIC]\n  Scope            : XFRM network-namespace totals; not per peer\n"
+            "  Counters Valid   : %s\n  SA Count         : %" PRIu32 "\n"
+            "  Packets          : %" PRIu64 "\n  Bytes            : %" PRIu64 "\n",
+            Stats.bCountersValid ? "yes" : "no", Stats.uiSaCount,
+            Stats.ullPackets, Stats.ullBytes);
+    }
+    return eError;
+}
+
 static void RecordNativeAppShowError(
     const char *pcSection,
     IpsecError_t eError,
@@ -728,6 +807,8 @@ IpsecError_t ShowNativeAppInformation(
     bKnown = bAll || bSummary || bXfrm || bNetwork ||
              (0 == strcmp("daemon", pcScope)) ||
              (0 == strcmp("datapath", pcScope)) ||
+             (0 == strcmp("packet-path", pcScope)) ||
+             (0 == strcmp("traffic", pcScope)) ||
              (0 == strcmp("connections", pcScope)) ||
              (0 == strcmp("ike", pcScope)) ||
              (0 == strcmp("child", pcScope)) ||
@@ -774,12 +855,20 @@ IpsecError_t ShowNativeAppInformation(
     }
     if (bAll || bSummary || (0 == strcmp("datapath", pcScope))) {
         if (IPSEC_OK == eDatapathError) {
-            ShowNativeAppDatapathStatus(&DatapathStatus);
+            RecordNativeAppShowError("DATAPATH",
+                ShowNativeAppDatapathStatus(pContext, &DatapathStatus), &eFirstError);
         }
         else {
             RecordNativeAppShowError("DATAPATH", eDatapathError,
                                      &eFirstError);
         }
+    }
+    if (bAll || bSummary || (0 == strcmp("packet-path", pcScope))) {
+        RecordNativeAppShowError("PACKET PATH",
+            ShowNativeAppPacketPath(pContext), &eFirstError);
+    }
+    if (bAll || (0 == strcmp("traffic", pcScope))) {
+        RecordNativeAppShowError("TRAFFIC", ShowNativeAppTraffic(pContext), &eFirstError);
     }
     if (bAll || bSummary || (0 == strcmp("connections", pcScope))) {
         RecordNativeAppShowError("CONNECTIONS",
@@ -830,7 +919,7 @@ IpsecError_t ShowNativeAppInformation(
         }
         else {
             RecordNativeAppShowError("XFRM STATISTICS",
-                                     ShowNativeAppXfrmStatistics(),
+                                     ShowNativeAppXfrmStatistics(pContext),
                                      &eFirstError);
         }
     }

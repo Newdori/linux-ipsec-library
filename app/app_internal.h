@@ -60,6 +60,7 @@ typedef struct NativeAppTargetStatus {
 
 typedef struct NativeAppConfig {
     NativeAppRole_t eRole;
+    IpsecDatapathConfig_t Datapath;
     char acLocalAddress[IPSEC_ADDRESS_LENGTH];
     char acRemoteAddress[IPSEC_ADDRESS_LENGTH];
     char acLocalId[IPSEC_ID_LENGTH];
@@ -79,6 +80,32 @@ typedef struct NativeAppConfig {
     uint32_t uiTimeoutMs;
     uint32_t uiPeerPort;
 } NativeAppConfig_t;
+
+/* Context-wide settings are immutable until the application restarts. */
+bool IsNativeAppDatapathKey(const char *pcKey);
+IpsecError_t SetNativeAppDatapathSetting(
+    NativeAppConfig_t *pConfig, const char *pcKey, const char *pcValue);
+IpsecError_t ValidateNativeAppDatapathConfig(const NativeAppConfig_t *pConfig);
+bool AreNativeAppContextSettingsEqual(
+    const NativeAppConfig_t *pLeft, const NativeAppConfig_t *pRight);
+void ShowNativeAppDatapathConfig(const NativeAppConfig_t *pConfig);
+
+typedef enum NativeAppPacketAction {
+    NATIVE_APP_PACKET_PROTECTED_RECEIVE = 0,
+    NATIVE_APP_PACKET_PROTECTED_SUBMIT,
+    NATIVE_APP_PACKET_PLAIN_RECEIVE
+} NativeAppPacketAction_t;
+
+typedef struct NativeAppPacketOptions {
+    const char *pcPath;
+    uint32_t uiTimeoutMs;
+    NativeAppPacketAction_t eAction;
+} NativeAppPacketOptions_t;
+
+bool ParseNativeAppPacketOptions(uint32_t uiArgumentCount,
+    char **ppcArguments, NativeAppPacketOptions_t *pOptions);
+IpsecError_t TransferNativeAppPacketFile(IpsecContext_t *pContext,
+    const NativeAppPacketOptions_t *pOptions);
 
 typedef struct NativeAppPeer {
     uint32_t uiGroupId;

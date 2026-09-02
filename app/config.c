@@ -140,6 +140,12 @@ IpsecError_t SetNativeAppConfigSetting(
 {
     bool bAccepted = true;
 
+    if ((NULL == pConfig) || (NULL == pcKey) || (NULL == pcValue)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    if (IsNativeAppDatapathKey(pcKey)) {
+        return SetNativeAppDatapathSetting(pConfig, pcKey, pcValue);
+    }
     if (0 == strcmp("role", pcKey)) {
         if (0 == strcmp("initiator", pcValue)) {
             pConfig->eRole = NATIVE_APP_ROLE_INITIATOR;
@@ -261,7 +267,7 @@ IpsecError_t SetNativeAppConfigSetting(
                     (UINT16_MAX >= pConfig->uiPeerPort);
     }
     else if (IsNativeAppIgnoredV15Key(pcKey)) {
-        /* Accepted for direct reuse of v15 configuration files. */
+        /* Accepted for unchanged reuse of v15 configuration files. */
     }
     else {
         bAccepted = false;
@@ -284,7 +290,13 @@ IpsecError_t ValidateNativeAppConfig(
 {
     const char *pcInvalid = NULL;
 
-    if (!IsNativeAppAddressValid(pConfig->acLocalAddress)) {
+    if (NULL == pConfig) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    if (IPSEC_OK != ValidateNativeAppDatapathConfig(pConfig)) {
+        pcInvalid = "packet path settings";
+    }
+    else if (!IsNativeAppAddressValid(pConfig->acLocalAddress)) {
         pcInvalid = "local_ip";
     }
     else if (!IsNativeAppAddressValid(pConfig->acRemoteAddress)) {
@@ -332,6 +344,7 @@ void InitializeNativeAppConfig(NativeAppConfig_t *pConfig)
 {
     if (NULL != pConfig) {
         (void)memset(pConfig, 0, sizeof(*pConfig));
+        pConfig->Datapath.uiStructSize = sizeof(pConfig->Datapath);
         pConfig->eRole = NATIVE_APP_ROLE_INITIATOR;
         pConfig->eMode = IPSEC_MODE_TUNNEL;
         pConfig->uiTimeoutMs = 30000U;
@@ -362,6 +375,9 @@ static bool IsNativeAppApplicationKey(const char *pcKey)
     };
     uint32_t uiIndex;
 
+    if (IsNativeAppDatapathKey(pcKey)) {
+        return true;
+    }
     for (uiIndex = 0U;
          uiIndex < (uint32_t)(sizeof(pacKeys) / sizeof(pacKeys[0]));
          uiIndex++) {
@@ -491,6 +507,9 @@ IpsecError_t ValidateNativeAppBaseConfig(
 
     if (NULL == pConfig) {
         return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    else if (IPSEC_OK != ValidateNativeAppDatapathConfig(pConfig)) {
+        pcInvalid = "packet path settings";
     }
     else if (!IsNativeAppAddressValid(pConfig->acLocalAddress)) {
         pcInvalid = "local_ip";

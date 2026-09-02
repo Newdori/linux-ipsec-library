@@ -27,20 +27,27 @@ static IpsecError_t MapNetlinkErrno(
     return eError;
 }
 
-static IpsecError_t WaitNetlinkData(int32_t iSocket)
+static IpsecError_t WaitNetlinkData(int32_t iSocket, uint64_t ullDeadlineMs)
 {
     struct pollfd Descriptor;
     int32_t iResult;
     IpsecError_t eError;
+    uint64_t ullNow;
+    uint32_t uiRemaining;
 
     memset(&Descriptor, 0, sizeof(Descriptor));
     Descriptor.fd = iSocket;
     Descriptor.events = POLLIN;
 
     do {
-        iResult = (int32_t)poll(&Descriptor, 1U,
-                                (int32_t)IPSEC_NETLINK_TIMEOUT_MS);
-    } while ((0 > iResult) && (EINTR == errno));
+        ullNow = GetIpsecMonotonicMilliseconds();
+        if (ullNow >= ullDeadlineMs) {
+            return IPSEC_ERR_NETLINK_RECV;
+        }
+        uiRemaining = (uint32_t)(ullDeadlineMs - ullNow);
+        iResult = (int32_t)poll(&Descriptor, 1U, (int32_t)uiRemaining);
+    } while ((iResult < 0) && (EINTR == errno) &&
+             (GetIpsecMonotonicMilliseconds() < ullDeadlineMs));
 
     if (0 == iResult) {
         eError = IPSEC_ERR_NETLINK_RECV;
@@ -70,6 +77,7 @@ static IpsecError_t SendNetlinkRequest(
     struct msghdr Message;
     ssize_t lSentLength;
     IpsecError_t eError;
+    uint64_t ullDeadlineMs = GetIpsecMonotonicMilliseconds() + IPSEC_NETLINK_TIMEOUT_MS;
 
     memset(&KernelAddress, 0, sizeof(KernelAddress));
     KernelAddress.nl_family = AF_NETLINK;
@@ -83,8 +91,9 @@ static IpsecError_t SendNetlinkRequest(
     Message.msg_iovlen = 1U;
 
     do {
-        lSentLength = sendmsg(iSocket, &Message, 0);
-    } while ((0 > lSentLength) && (EINTR == errno));
+        lSentLength = sendmsg(iSocket, &Message, MSG_DONTWAIT);
+    } while ((lSentLength < 0) && (EINTR == errno) &&
+             (GetIpsecMonotonicMilliseconds() < ullDeadlineMs));
 
     if (0 > lSentLength) {
         eError = MapNetlinkErrno(errno, IPSEC_ERR_NETLINK_SEND);
@@ -111,6 +120,9 @@ static IpsecError_t ProcessNetlinkError(
     }
     else {
         pError = (const struct nlmsgerr *)NLMSG_DATA(pHeader);
+        if ((pError->error > 0) || (INT32_MIN == pError->error)) {
+            return IPSEC_ERR_NETLINK_PARSE;
+        }
         iKernelError = -pError->error;
         if (0 == iKernelError) {
             eError = IPSEC_OK;
@@ -129,7 +141,7 @@ static IpsecError_t ReceiveNetlinkDump(
     NetlinkMessageCallback_t pCallback,
     void *pvUserData)
 {
-    uint8_t aucBuffer[IPSEC_NETLINK_RECEIVE_LENGTH];
+    _Alignas(struct nlmsghdr) uint8_t aucBuffer[IPSEC_NETLINK_RECEIVE_LENGTH];
     struct sockaddr_nl SenderAddress;
     struct iovec IoVector;
     struct msghdr Message;
@@ -140,9 +152,10 @@ static IpsecError_t ReceiveNetlinkDump(
     uint32_t uiDatagramCount = 0U;
     bool bComplete = false;
     IpsecError_t eError = IPSEC_OK;
+    uint64_t ullDeadlineMs = GetIpsecMonotonicMilliseconds() + IPSEC_NETLINK_TIMEOUT_MS;
 
     while (!bComplete && (IPSEC_OK == eError)) {
-        eError = WaitNetlinkData(iSocket);
+        eError = WaitNetlinkData(iSocket, ullDeadlineMs);
         if (IPSEC_OK != eError) {
             break;
         }
@@ -158,8 +171,9 @@ static IpsecError_t ReceiveNetlinkDump(
             Message.msg_iovlen = 1U;
 
             do {
-                lReceivedLength = recvmsg(iSocket, &Message, 0);
-            } while ((0 > lReceivedLength) && (EINTR == errno));
+                lReceivedLength = recvmsg(iSocket, &Message, MSG_DONTWAIT);
+            } while ((lReceivedLength < 0) && (EINTR == errno) &&
+                     (GetIpsecMonotonicMilliseconds() < ullDeadlineMs));
         }
 
         if (0 > lReceivedLength) {
@@ -167,6 +181,8 @@ static IpsecError_t ReceiveNetlinkDump(
         }
         else if ((0 == lReceivedLength) ||
                  (0 != (Message.msg_flags & MSG_TRUNC)) ||
+                 (Message.msg_namelen < sizeof(SenderAddress)) ||
+                 (AF_NETLINK != SenderAddress.nl_family) ||
                  (0U != SenderAddress.nl_pid)) {
             eError = IPSEC_ERR_NETLINK_RECV;
         }
@@ -189,7 +205,21 @@ static IpsecError_t ReceiveNetlinkDump(
                     eError = IPSEC_ERR_NETLINK_PARSE;
                 }
                 else if (NLMSG_DONE == pHeader->nlmsg_type) {
-                    bComplete = true;
+                    int32_t iDumpError = 0;
+                    uint32_t uiPayloadLength = pHeader->nlmsg_len - NLMSG_HDRLEN;
+                    if (uiPayloadLength >= sizeof(iDumpError)) {
+                        memcpy(&iDumpError, NLMSG_DATA(pHeader), sizeof(iDumpError));
+                    }
+                    if (((0U != uiPayloadLength) && (uiPayloadLength < sizeof(iDumpError))) ||
+                        (iDumpError > 0) || (INT32_MIN == iDumpError)) {
+                        eError = IPSEC_ERR_NETLINK_PARSE;
+                    }
+                    else if (iDumpError < 0) {
+                        eError = MapNetlinkErrno(-iDumpError, IPSEC_ERR_NETLINK_RECV);
+                    }
+                    else {
+                        bComplete = true;
+                    }
                 }
                 else if (NLMSG_ERROR == pHeader->nlmsg_type) {
                     eError = ProcessNetlinkError(pHeader);
@@ -237,6 +267,10 @@ static IpsecError_t ReceiveNetlinkDump(
         }
     }
 
+    /* XFRM responses may carry SA key attributes even when the public parser
+     * does not expose them. Do not leave this receive buffer on the stack.
+     */
+    SecureZeroIpsec(aucBuffer, sizeof(aucBuffer));
     return eError;
 }
 

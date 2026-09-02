@@ -1,4 +1,5 @@
 #include "xfrm_internal.h"
+#include "../common/datapath_ops.h"
 
 #include <arpa/inet.h>
 #include <linux/rtnetlink.h>
@@ -297,6 +298,10 @@ IpsecError_t GetIpsecXfrmStates(
     }
     else {
         memset(pList, 0, sizeof(*pList));
+        eError = RequireIpsecXfrmBackend(pContext);
+        if (IPSEC_OK != eError) {
+            return eError;
+        }
         memset(&Request, 0, sizeof(Request));
         Request.family = AF_UNSPEC;
         eError = ExecuteNetlinkDump(NETLINK_XFRM, XFRM_MSG_GETSA,

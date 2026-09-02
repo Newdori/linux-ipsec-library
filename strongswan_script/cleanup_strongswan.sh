@@ -184,7 +184,7 @@ StopAndDisableService()
     pcDetectedService=$(DetectServiceName || true)
 
     if [ -z "${pcDetectedService}" ]; then
-        LogInfo 'No strongSwan service definition was found; checking direct charon processes.'
+        LogInfo 'No strongSwan service definition was found; checking standalone charon processes.'
         return 0
     else
         :

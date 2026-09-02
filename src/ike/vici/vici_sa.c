@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IPSEC_SA_POLL_INTERVAL_MS 250U
 
 typedef struct SaCollector {
     IpsecIkeSaList_t *pIkeList;
@@ -718,7 +717,9 @@ static IpsecError_t CollectSaEvent(
 static IpsecError_t QueryIpsecSas(
     IpsecContext_t *pContext,
     IpsecIkeSaList_t *pIkeList,
-    IpsecChildSaList_t *pChildList)
+    IpsecChildSaList_t *pChildList,
+    uint64_t ullDeadlineMs,
+    int32_t iCancelFd)
 {
     ViciBuffer_t Request = {0};
     ViciCommandResult_t Result = {0};
@@ -747,9 +748,9 @@ static IpsecError_t QueryIpsecSas(
         eError = InitializeViciBuffer(&Request, 1U, false);
     }
     if (IPSEC_OK == eError) {
-        eError = ExecuteViciCommand(pContext, "list-sas", &Request,
-                                    "list-sa", CollectSaEvent, NULL,
-                                    &Collector, &Result);
+        eError = ExecuteViciCommandUntil(pContext, "list-sas", &Request,
+                                         "list-sa", CollectSaEvent, NULL,
+                                         &Collector, &Result, ullDeadlineMs, iCancelFd);
     }
     else {
         /* Preserve argument or allocation error. */
@@ -768,7 +769,8 @@ IpsecError_t GetIpsecIkeSas(
         eError = IPSEC_ERR_INVALID_ARGUMENT;
     }
     else {
-        eError = QueryIpsecSas(pContext, pList, NULL);
+        memset(pList, 0, sizeof(*pList));
+        eError = QueryIpsecSas(pContext, pList, NULL, 0U, -1);
         if (IPSEC_OK != eError) {
             FreeIpsecIkeSaList(pList);
         }
@@ -800,7 +802,8 @@ IpsecError_t GetIpsecChildSas(
         eError = IPSEC_ERR_INVALID_ARGUMENT;
     }
     else {
-        eError = QueryIpsecSas(pContext, NULL, pList);
+        memset(pList, 0, sizeof(*pList));
+        eError = QueryIpsecSas(pContext, NULL, pList, 0U, -1);
         if (IPSEC_OK != eError) {
             FreeIpsecChildSaList(pList);
         }
@@ -822,65 +825,113 @@ void FreeIpsecChildSaList(IpsecChildSaList_t *pList)
     }
 }
 
+static IpsecError_t RecoverViciWait(ViciWaiter_t *pWaiter, bool bChild)
+{
+    IpsecError_t eError;
+
+    DisconnectViciTransport(&pWaiter->EventContext);
+    do {
+        eError = PauseViciWait(pWaiter);
+        if (IPSEC_OK != eError) {
+            return eError;
+        }
+        if (GetIpsecMonotonicMilliseconds() >= pWaiter->ullDeadlineMs) {
+            return IPSEC_ERR_VICI_TIMEOUT;
+        }
+        eError = SubscribeViciSaEvents(pWaiter, bChild);
+    } while ((IPSEC_ERR_VICI_TRANSPORT == eError) ||
+             (IPSEC_ERR_VICI_CONNECT == eError));
+    return eError;
+}
+
+static IpsecError_t WaitIpsecSa(
+    IpsecContext_t *pContext,
+    const char *pcName,
+    uint32_t uiTimeoutMs,
+    bool bChild)
+{
+    ViciWaiter_t Waiter;
+    IpsecIkeSaList_t IkeList = {0};
+    IpsecChildSaList_t ChildList = {0};
+    uint64_t ullNowMs;
+    uint64_t ullDeadlineMs;
+    uint32_t uiIndex;
+    bool bReady = false;
+    IpsecError_t eError;
+
+    if ((NULL == pContext) || (0U == uiTimeoutMs)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    eError = ValidateSaName(pcName);
+    if (IPSEC_OK != eError) {
+        return eError;
+    }
+    ullNowMs = GetIpsecMonotonicMilliseconds();
+    if ((0U == ullNowMs) || (ullNowMs > (UINT64_MAX - uiTimeoutMs))) {
+        return IPSEC_ERR_INTERNAL;
+    }
+    ullDeadlineMs = ullNowMs + uiTimeoutMs;
+    eError = BeginViciWait(pContext, &Waiter, ullDeadlineMs);
+    if (IPSEC_OK != eError) {
+        return eError;
+    }
+    eError = SubscribeViciSaEvents(&Waiter, bChild);
+    if ((IPSEC_OK == eError) && Waiter.bPolling) {
+        LogIpsec(pContext, IPSEC_LOG_WARNING,
+                 "VICI SA events unavailable; using bounded compatibility polling");
+    }
+    while ((IPSEC_OK == eError) && !bReady) {
+        if (IsViciWaitCancelled(Waiter.aiCancelSockets[0])) {
+            eError = IPSEC_ERR_CANCELLED;
+            break;
+        }
+        if (GetIpsecMonotonicMilliseconds() >= ullDeadlineMs) {
+            eError = IPSEC_ERR_VICI_TIMEOUT;
+            break;
+        }
+        /* Subscribe BEFORE the snapshot. Events emitted while querying remain
+         * queued on this wait's socket, closing the snapshot/wait race.
+         * Each event is only a wakeup hint; re-query the authoritative state.
+         */
+        eError = QueryIpsecSas(pContext, bChild ? NULL : &IkeList,
+                               bChild ? &ChildList : NULL,
+                               ullDeadlineMs, Waiter.aiCancelSockets[0]);
+        if (IPSEC_OK == eError) {
+            for (uiIndex = 0U; uiIndex < IkeList.uiCount; uiIndex++) {
+                if ((0 == strcmp(pcName, IkeList.pItems[uiIndex].acName)) &&
+                    IkeList.pItems[uiIndex].bEstablished) {
+                    bReady = true;
+                }
+            }
+            for (uiIndex = 0U; uiIndex < ChildList.uiCount; uiIndex++) {
+                if ((0 == strcmp(pcName, ChildList.pItems[uiIndex].acName)) &&
+                    (0 == strcmp("INSTALLED", ChildList.pItems[uiIndex].acState))) {
+                    bReady = true;
+                }
+            }
+        }
+        FreeIpsecIkeSaList(&IkeList);
+        FreeIpsecChildSaList(&ChildList);
+        if ((IPSEC_OK == eError) && !bReady) {
+            eError = ReceiveViciSaChange(&Waiter);
+        }
+        if ((IPSEC_ERR_VICI_TRANSPORT == eError) ||
+            (IPSEC_ERR_VICI_CONNECT == eError)) {
+            /* Only this read-only observation is retried. No initiate, rekey,
+             * terminate or credential request is replayed after a disconnect. */
+            eError = RecoverViciWait(&Waiter, bChild);
+        }
+    }
+    EndViciWait(pContext, &Waiter);
+    return eError;
+}
+
 IpsecError_t WaitIpsecIkeEstablished(
     IpsecContext_t *pContext,
     const char *pcIkeName,
     uint32_t uiTimeoutMs)
 {
-    IpsecIkeSaList_t List;
-    uint64_t ullDeadlineMs;
-    uint32_t uiIndex;
-    bool bEstablished = false;
-    IpsecError_t eError;
-
-    if ((NULL == pContext) || (0U == uiTimeoutMs)) {
-        eError = IPSEC_ERR_INVALID_ARGUMENT;
-    }
-    else {
-        eError = ValidateSaName(pcIkeName);
-    }
-    if (IPSEC_OK == eError) {
-        ullDeadlineMs = GetIpsecMonotonicMilliseconds() + uiTimeoutMs;
-        do {
-            memset(&List, 0, sizeof(List));
-            eError = GetIpsecIkeSas(pContext, &List);
-            if (IPSEC_OK == eError) {
-                for (uiIndex = 0U; uiIndex < List.uiCount; uiIndex++) {
-                    if ((0 == strcmp(pcIkeName, List.pItems[uiIndex].acName)) &&
-                        List.pItems[uiIndex].bEstablished) {
-                        bEstablished = true;
-                        break;
-                    }
-                    else {
-                        /* Continue searching. */
-                    }
-                }
-            }
-            else {
-                /* Stop on query error. */
-            }
-            FreeIpsecIkeSaList(&List);
-            if (!bEstablished && (IPSEC_OK == eError) &&
-                (GetIpsecMonotonicMilliseconds() < ullDeadlineMs)) {
-                eError = SleepIpsecMilliseconds(IPSEC_SA_POLL_INTERVAL_MS);
-            }
-            else {
-                /* Established, failed, or timed out. */
-            }
-        } while (!bEstablished && (IPSEC_OK == eError) &&
-                 (GetIpsecMonotonicMilliseconds() < ullDeadlineMs));
-
-        if ((IPSEC_OK == eError) && !bEstablished) {
-            eError = IPSEC_ERR_VICI_TIMEOUT;
-        }
-        else {
-            /* Return success or query error. */
-        }
-    }
-    else {
-        /* Preserve validation error. */
-    }
-    return eError;
+    return WaitIpsecSa(pContext, pcIkeName, uiTimeoutMs, false);
 }
 
 IpsecError_t WaitIpsecChildInstalled(
@@ -888,60 +939,5 @@ IpsecError_t WaitIpsecChildInstalled(
     const char *pcChildName,
     uint32_t uiTimeoutMs)
 {
-    IpsecChildSaList_t List;
-    uint64_t ullDeadlineMs;
-    uint32_t uiIndex;
-    bool bInstalled = false;
-    IpsecError_t eError;
-
-    if ((NULL == pContext) || (0U == uiTimeoutMs)) {
-        eError = IPSEC_ERR_INVALID_ARGUMENT;
-    }
-    else {
-        eError = ValidateSaName(pcChildName);
-    }
-    if (IPSEC_OK == eError) {
-        ullDeadlineMs = GetIpsecMonotonicMilliseconds() + uiTimeoutMs;
-        do {
-            memset(&List, 0, sizeof(List));
-            eError = GetIpsecChildSas(pContext, &List);
-            if (IPSEC_OK == eError) {
-                for (uiIndex = 0U; uiIndex < List.uiCount; uiIndex++) {
-                    if ((0 == strcmp(pcChildName,
-                                     List.pItems[uiIndex].acName)) &&
-                        (0 == strcmp("INSTALLED",
-                                     List.pItems[uiIndex].acState))) {
-                        bInstalled = true;
-                        break;
-                    }
-                    else {
-                        /* Continue searching. */
-                    }
-                }
-            }
-            else {
-                /* Stop on query error. */
-            }
-            FreeIpsecChildSaList(&List);
-            if (!bInstalled && (IPSEC_OK == eError) &&
-                (GetIpsecMonotonicMilliseconds() < ullDeadlineMs)) {
-                eError = SleepIpsecMilliseconds(IPSEC_SA_POLL_INTERVAL_MS);
-            }
-            else {
-                /* Installed, failed, or timed out. */
-            }
-        } while (!bInstalled && (IPSEC_OK == eError) &&
-                 (GetIpsecMonotonicMilliseconds() < ullDeadlineMs));
-
-        if ((IPSEC_OK == eError) && !bInstalled) {
-            eError = IPSEC_ERR_VICI_TIMEOUT;
-        }
-        else {
-            /* Return success or query error. */
-        }
-    }
-    else {
-        /* Preserve validation error. */
-    }
-    return eError;
+    return WaitIpsecSa(pContext, pcChildName, uiTimeoutMs, true);
 }

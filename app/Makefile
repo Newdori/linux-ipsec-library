@@ -29,10 +29,10 @@ endif
 
 ifeq ($(TARGET),zynqmp)
 LIBRARY_TARGET = zynqmp
-LIBRARY = ../lib/zynqmp/libipsec.a
+LIBRARY = ../lib/zynqmp/libipsecctrl.a
 else ifeq ($(TARGET),x86_64)
 LIBRARY_TARGET = host
-LIBRARY = ../lib/x86_64/libipsec.a
+LIBRARY = ../lib/x86_64/libipsecctrl.a
 else
 $(error Unsupported TARGET '$(TARGET)'; use x86_64 or zynqmp)
 endif
@@ -49,6 +49,8 @@ SOURCES = \
 	cli.c \
 	command.c \
 	config.c \
+	datapath.c \
+	packet.c \
 	lifecycle.c \
 	peer.c \
 	state.c \

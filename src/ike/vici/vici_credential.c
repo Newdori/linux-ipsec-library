@@ -150,7 +150,7 @@ IpsecError_t AddIpsecPsk(
         /* Preserve message error. */
     }
     for (uiIndex = 0U;
-         (uiIndex < pPsk->Owners.uiCount) && (IPSEC_OK == eError);
+         (IPSEC_OK == eError) && (uiIndex < pPsk->Owners.uiCount);
          uiIndex++) {
         eError = AddViciListItemString(&Message,
                                        pPsk->Owners.ppcItems[uiIndex]);

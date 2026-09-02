@@ -5,6 +5,8 @@
 
 #include <linux/xfrm.h>
 
+IpsecError_t InspectXfrmOffload(const struct nlmsghdr *pHeader, void *pvData);
+
 IpsecError_t ParseXfrmStateMessage(
     const struct nlmsghdr *pHeader,
     void *pvUserData);

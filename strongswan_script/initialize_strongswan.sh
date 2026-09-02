@@ -497,7 +497,7 @@ WaitForDatapath()
         :
     fi
     if [ "${DRY_RUN}" = "1" ]; then
-        LogInfo 'Would wait for the kernel-libipsec TUN device: ipsec0'
+        LogInfo 'Would wait for an UP TUN device; KERNEL_LIBIPSEC_TUN_NAME may select an existing name.'
         return 0
     else
         :
@@ -506,16 +506,36 @@ WaitForDatapath()
     iAttempt=0
     while [ "${iAttempt}" -lt 20 ]
     do
-        if [ -d /sys/class/net/ipsec0 ]; then
-            LogInfo 'kernel-libipsec TUN device is ready: ipsec0'
+        iTunCount=0
+        acTunName=''
+        for acTunPath in /sys/class/net/*; do
+            [ -r "${acTunPath}/tun_flags" ] || continue
+            [ -r "${acTunPath}/flags" ] || continue
+            acCandidate=${acTunPath##*/}
+            if [ -n "${KERNEL_LIBIPSEC_TUN_NAME:-}" ] &&
+               [ "${acCandidate}" != "${KERNEL_LIBIPSEC_TUN_NAME}" ]; then
+                continue
+            fi
+            read -r uiTunFlags < "${acTunPath}/tun_flags"
+            read -r uiLinkFlags < "${acTunPath}/flags"
+            if [ "$((uiTunFlags & 3))" -eq 1 ] && [ "$((uiLinkFlags & 1))" -eq 1 ]; then
+                iTunCount=$((iTunCount + 1))
+                acTunName=${acCandidate}
+            fi
+        done
+        if [ "${iTunCount}" -eq 1 ]; then
+            LogInfo "TUN candidate is ready: ${acTunName} (confirm charon ownership)"
             return 0
+        elif [ "${iTunCount}" -gt 1 ]; then
+            LogError 'Multiple UP TUN devices: set KERNEL_LIBIPSEC_TUN_NAME explicitly.'
+            exit 1
         else
             sleep 1
             iAttempt=$((iAttempt + 1))
         fi
     done
 
-    LogError 'kernel-libipsec was requested, but ipsec0 was not created.'
+    LogError 'kernel-libipsec was requested, but no unambiguous UP TUN was found.'
     LogError 'Check the charon service log and kernel-libipsec plugin dependencies.'
     exit 1
 }

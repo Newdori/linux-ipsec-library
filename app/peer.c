@@ -811,9 +811,12 @@ static IpsecError_t AcceptNativeAppPeerConnection(
                 &RemoteSocketAddress, acRemoteSocketAddress,
                 sizeof(acRemoteSocketAddress)) ||
             !IsNativeAppSameAddress(pcRemoteAddress,
-                                    acRemoteSocketAddress)) {
+                                    acRemoteSocketAddress) ||
+            ((IPSEC_PACKET_PATH_APPLICATION == pBaseConfig->Datapath.eProtectedPacketPath) &&
+             !IsNativeAppSameAddress(pcRemoteAddress,
+                 pBaseConfig->Datapath.acProtectedRemoteAddress))) {
             SetNativeAppPeerError(pcError, uiErrorLength,
-                                  "invalid peer registration request");
+                                  "invalid peer registration request or peer outside protected pair");
             eError = IPSEC_ERR_INVALID_ARGUMENT;
         }
         else {
@@ -1116,7 +1119,14 @@ IpsecError_t RegisterNativeAppPeer(
         NativeAppConfig_t EffectiveConfig = *pBaseConfig;
 
         EffectiveConfig.eMode = eMode;
-        if (!CopyNativeAppPeerText(
+        if ((IPSEC_PACKET_PATH_APPLICATION == pBaseConfig->Datapath.eProtectedPacketPath) &&
+            !IsNativeAppSameAddress(pacTokens[4],
+                pBaseConfig->Datapath.acProtectedRemoteAddress)) {
+            SetNativeAppPeerError(pcError, uiErrorLength,
+                                  "assigned peer is outside the configured protected pair");
+            eError = IPSEC_ERR_INVALID_ARGUMENT;
+        }
+        else if (!CopyNativeAppPeerText(
                 EffectiveConfig.acIkeProposals,
                 sizeof(EffectiveConfig.acIkeProposals), pacTokens[6]) ||
             !CopyNativeAppPeerText(

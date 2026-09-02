@@ -11,7 +11,8 @@ ZYNQMP_RANLIB ?= aarch64-linux-gnu-ranlib
 
 COMMON_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror -fPIC -O2
 COMMON_CPPFLAGS := -I../include -Iinternal -Iike/vici -Idatapath/common \
-	-Idatapath/kernel_libipsec -Idatapath/xfrm -Inetwork
+	-Idatapath/kernel_libipsec -Idatapath/xfrm -Idatapath/protected \
+	-Idatapath/plain -Inetwork
 COMMON_LDLIBS := -pthread
 
 SOURCES := \
@@ -33,11 +34,28 @@ SOURCES := \
 	ike/vici/vici_sa.c \
 	ike/vici/vici_stats.c \
 	ike/vici/vici_transport.c \
+	ike/vici/vici_wait.c \
 	datapath/common/datapath.c \
+	datapath/common/datapath_health.c \
+	datapath/common/packet_path.c \
+	datapath/kernel_libipsec/kernel_libipsec_datapath.c \
 	datapath/kernel_libipsec/kernel_libipsec_status.c \
+	datapath/kernel_libipsec/kernel_libipsec_tun.c \
+	datapath/xfrm/xfrm_backend.c \
 	datapath/xfrm/xfrm_policy.c \
 	datapath/xfrm/xfrm_state.c \
 	datapath/xfrm/xfrm_stats.c \
+	datapath/protected/protected_path.c \
+	datapath/protected/system_protected_path.c \
+	datapath/protected/application_protected_path.c \
+	datapath/protected/application_protected_tun.c \
+	datapath/protected/application_protected_filter.c \
+	datapath/protected/application_protected_netlink.c \
+	datapath/protected/protected_packet.c \
+	datapath/plain/plain_path.c \
+	datapath/plain/system_plain_path.c \
+	datapath/plain/application_plain_path.c \
+	datapath/plain/plain_netfilter.c \
 	network/address.c \
 	network/interface.c \
 	network/route.c
@@ -46,8 +64,10 @@ PLATFORM ?= undefined
 ARCH_DIRECTORY ?= undefined
 BUILD_DIRECTORY := .build/$(PLATFORM)
 OBJECTS := $(SOURCES:%.c=$(BUILD_DIRECTORY)/%.o)
-BUILD_STATIC_LIBRARY := $(BUILD_DIRECTORY)/libipsec.a
-BUILD_SHARED_LIBRARY := $(BUILD_DIRECTORY)/libipsec.so
+LIBRARY_VERSION := 0.1.0
+LIBRARY_SONAME := libipsecctrl.so.0
+BUILD_STATIC_LIBRARY := $(BUILD_DIRECTORY)/libipsecctrl.a
+BUILD_SHARED_LIBRARY := $(BUILD_DIRECTORY)/libipsecctrl.so.$(LIBRARY_VERSION)
 OUTPUT_DIRECTORY := ../lib/$(ARCH_DIRECTORY)
 CLEAN_REQUESTED := $(filter clean,$(MAKECMDGOALS))
 
@@ -73,11 +93,13 @@ endif
 
 build-target: $(BUILD_STATIC_LIBRARY) $(BUILD_SHARED_LIBRARY)
 	@mkdir -p "$(OUTPUT_DIRECTORY)"
-	@cp "$(BUILD_STATIC_LIBRARY)" "$(OUTPUT_DIRECTORY)/libipsec.a"
-	@cp "$(BUILD_SHARED_LIBRARY)" "$(OUTPUT_DIRECTORY)/libipsec.so"
+	@cp "$(BUILD_STATIC_LIBRARY)" "$(OUTPUT_DIRECTORY)/libipsecctrl.a"
+	@cp "$(BUILD_SHARED_LIBRARY)" "$(OUTPUT_DIRECTORY)/libipsecctrl.so.$(LIBRARY_VERSION)"
+	@ln -sfn "libipsecctrl.so.$(LIBRARY_VERSION)" "$(OUTPUT_DIRECTORY)/$(LIBRARY_SONAME)"
+	@ln -sfn "$(LIBRARY_SONAME)" "$(OUTPUT_DIRECTORY)/libipsecctrl.so"
 	@rm -rf "$(BUILD_DIRECTORY)"
-	@printf '%s\n' "Generated $(OUTPUT_DIRECTORY)/libipsec.a"
-	@printf '%s\n' "Generated $(OUTPUT_DIRECTORY)/libipsec.so"
+	@printf '%s\n' "Generated $(OUTPUT_DIRECTORY)/libipsecctrl.a"
+	@printf '%s\n' "Generated $(OUTPUT_DIRECTORY)/libipsecctrl.so"
 
 $(BUILD_DIRECTORY)/%.o: %.c
 	@mkdir -p "$(dir $@)"
@@ -87,8 +109,8 @@ $(BUILD_STATIC_LIBRARY): $(OBJECTS)
 	$(AR) rcs "$@" $(OBJECTS)
 	$(RANLIB) "$@"
 
-$(BUILD_SHARED_LIBRARY): $(OBJECTS) libipsec.map
-	$(CC) -shared -Wl,--version-script="$(CURDIR)/libipsec.map" \
+$(BUILD_SHARED_LIBRARY): $(OBJECTS) libipsecctrl.map
+	$(CC) -shared -Wl,-soname,$(LIBRARY_SONAME) -Wl,--version-script="$(CURDIR)/libipsecctrl.map" \
 		-o "$@" $(OBJECTS) $(LDFLAGS) $(COMMON_LDLIBS) $(LDLIBS)
 
 clean:

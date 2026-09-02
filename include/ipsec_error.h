@@ -1,6 +1,9 @@
 #ifndef IPSEC_ERROR_H
 #define IPSEC_ERROR_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -30,8 +33,49 @@ typedef enum IpsecError {
     IPSEC_ERR_INTERNAL,
     IPSEC_ERR_FILE_WRITE,
     IPSEC_ERR_FILE_EXISTS,
-    IPSEC_ERR_RANDOM
+    IPSEC_ERR_RANDOM,
+    IPSEC_ERR_CANCELLED,
+    IPSEC_ERR_INVALID_DATAPATH,
+    IPSEC_ERR_DATAPATH_UNAVAILABLE,
+    IPSEC_ERR_BACKEND_MISMATCH,
+    IPSEC_ERR_INVALID_PACKET_PATH,
+    IPSEC_ERR_PACKET_PATH_MISMATCH,
+    IPSEC_ERR_INTERFACE_NOT_FOUND,
+    IPSEC_ERR_INTERFACE_AMBIGUOUS,
+    IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE,
+    IPSEC_ERR_PLAIN_PATH_UNAVAILABLE,
+    IPSEC_ERR_PROTECTED_RECEIVE,
+    IPSEC_ERR_PROTECTED_SUBMIT,
+    IPSEC_ERR_PLAIN_RECEIVE,
+    IPSEC_ERR_PACKET_TYPE,
+    IPSEC_ERR_PACKET_INVALID,
+    IPSEC_ERR_PACKET_TIMEOUT,
+    IPSEC_ERR_ADDRESS_FAMILY,
+    IPSEC_ERR_RESOURCE_CONFLICT
 } IpsecError_t;
+
+typedef enum IpsecDiagnosticStage {
+    IPSEC_STAGE_NONE = 0,
+    IPSEC_STAGE_QUEUE,
+    IPSEC_STAGE_CONNECT,
+    IPSEC_STAGE_REGISTER,
+    IPSEC_STAGE_ENCODE,
+    IPSEC_STAGE_SEND,
+    IPSEC_STAGE_RECEIVE,
+    IPSEC_STAGE_UNREGISTER,
+    IPSEC_STAGE_DAEMON
+} IpsecDiagnosticStage_t;
+
+/* A snapshot of the last completed VICI command, not thread-local storage. */
+typedef struct IpsecDiagnostic {
+    uint32_t uiStructSize;
+    IpsecError_t eError;
+    IpsecDiagnosticStage_t eStage;
+    int32_t iSystemError;
+    bool bOutcomeUnknown;
+    char acCommand[64];
+    char acMessage[256];
+} IpsecDiagnostic_t;
 
 const char *GetIpsecErrorString(IpsecError_t eError);
 

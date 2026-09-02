@@ -3,7 +3,7 @@
 ## strongSwan
 
 strongSwan is a separate runtime program and is not included or linked into
-`libipsec`. The library communicates with `charon` over the VICI Unix
+`libipsecctrl`. The library communicates with `charon` over the VICI Unix
 socket protocol. The open-source strongSwan distribution is licensed under
 GPLv2; commercial licensing is also offered by the strongSwan project.
 

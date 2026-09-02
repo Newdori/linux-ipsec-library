@@ -5,3 +5,18 @@ vici_uri=unix:///run/charon.vici
 command_timeout_sec=60
 peer_server_ip=192.168.33.100
 peer_port=39002
+
+# Context settings: edit before startup. Backend selection never enables plugins.
+datapath_backend=auto
+protected_packet_path=system
+plain_packet_path=system
+# kernel_libipsec_tun=charon-tun
+# For Protected APPLICATION choose xfrm or kernel-libipsec above.
+# On kernel-libipsec also set management ipsec_mode=tunnel and OS raw_esp=yes.
+# protected_interface=esp-path0
+# protected_egress_interface=eth0
+# protected_local_ip=192.168.33.101
+# protected_remote_ip=192.168.33.100
+# protected_filter_priority=32000
+# Plain APPLICATION requires an OS-owned post-decrypt NFQUEUE rule.
+# plain_queue_number=32002

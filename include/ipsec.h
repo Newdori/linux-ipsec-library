@@ -10,6 +10,19 @@ extern "C" {
 
 typedef struct IpsecContext IpsecContext_t;
 
+/*
+ * Contexts support concurrent commands and SA waits. Commands on one VICI
+ * connection remain serialized. Stop new API calls, cancel/join caller-owned
+ * workers, then DeinitializeIpsec; deinit must not race a new API entry.
+ * Logger callbacks run on the calling thread, outside internal locks. They
+ * must not destroy the context and must synchronize their own shared state.
+ *
+ * Input strings/views are borrowed for the duration of the call. Get*List
+ * outputs must be empty (zero-initialized or previously freed); release them
+ * with their matching Free*List before reuse. Free functions clear the list.
+ * No getter transfers ownership of a context or of caller input buffers.
+ */
+
 #define IPSEC_GENERATED_PSK_BYTE_LENGTH 48U
 
 IpsecError_t GenerateIpsecPskFile(
@@ -19,8 +32,63 @@ IpsecError_t InitializeIpsec(
     IpsecContext_t **ppContext,
     const IpsecConfig_t *pConfig);
 
+/* Strict backend/path initialization. NULL datapath config = AUTO/SYSTEM/SYSTEM.
+ * InitializeIpsec keeps its legacy VICI-only success contract if probing is
+ * unavailable; its datapath getters then report that probe error.
+ * Neither function changes the backend selected inside charon.
+ */
+IpsecError_t InitializeIpsecWithDatapath(
+    IpsecContext_t **ppContext,
+    const IpsecConfig_t *pConfig,
+    const IpsecDatapathConfig_t *pDatapathConfig);
+
+IpsecError_t GetIpsecDatapathStatusEx(
+    IpsecContext_t *pContext, IpsecDatapathStatusEx_t *pStatus);
+IpsecError_t GetIpsecTrafficStatistics(
+    IpsecContext_t *pContext, IpsecTrafficStatistics_t *pStatistics);
+IpsecError_t GetIpsecPacketPathStatus(
+    IpsecContext_t *pContext, IpsecPacketPathStatus_t *pStatus);
+
+/* Caller owns the buffer. Protected receive requires capacity >= 65535 (TUN reads must
+ * never silently truncate). timeout=0 is a non-blocking attempt. No per-packet
+ * allocation. Exactly one protected reader and one protected writer per context;
+ * both may run concurrently, but must stop/join before deinit.
+ * Full unfragmented IPv4 RAW ESP packets only in the first implementation.
+ * Submit validates framing/scope, not authenticity; the backend checks ESP.
+ * Stop protected traffic/terminate SAs before APPLICATION teardown: removal of
+ * redirect filters restores the OS's ordinary egress behavior.
+ */
+IpsecError_t ReceiveIpsecProtectedPacket(
+    IpsecContext_t *pContext, IpsecProtectedPacket_t *pPacket,
+    uint32_t uiTimeoutMs);
+IpsecError_t SubmitIpsecProtectedPacket(
+    IpsecContext_t *pContext, const IpsecProtectedPacket_t *pPacket);
+
+/* Returns one authenticated, decrypted and decapsulated inner IPv4 packet
+ * selected by the OS-owned post-decrypt NFQUEUE rule. The library copies the
+ * full IPv4 packet and issues NF_DROP, so it is not also delivered to the
+ * Linux stack. Exactly one plain reader may use a context. The caller must
+ * continuously drain the configured queue and stop/join the reader before
+ * deinitialization.
+ */
+IpsecError_t ReceiveIpsecPlainPacket(
+    IpsecContext_t *pContext, IpsecPlainPacket_t *pPacket,
+    uint32_t uiTimeoutMs);
+
 void DeinitializeIpsec(
     IpsecContext_t *pContext);
+
+/* Cancel currently registered SA waits; future waits are unaffected. */
+IpsecError_t CancelIpsecWaits(IpsecContext_t *pContext);
+
+/* Set uiStructSize=sizeof(*pDiagnostic). Does not consume the snapshot.
+ * Concurrent callers may overwrite it; externally serialize if correlation
+ * with one particular command is required. Validation-only errors and raw
+ * Netlink queries do not update this VICI-command diagnostic.
+ */
+IpsecError_t GetIpsecLastDiagnostic(
+    IpsecContext_t *pContext,
+    IpsecDiagnostic_t *pDiagnostic);
 
 IpsecError_t AddIpsecConnection(
     IpsecContext_t *pContext,
@@ -63,6 +131,11 @@ IpsecError_t RekeyIpsecIke(
     IpsecContext_t *pContext,
     const char *pcIkeName);
 
+/* Waits observe an existing/requested SA; they do not initiate it. Timeout is
+ * a nonzero monotonic end-to-end budget (queue/connect/registration/query).
+ * Matching is by configuration name: after rekey, any matching established
+ * SA satisfies the predicate. This is not a rekey-completion barrier.
+ */
 IpsecError_t WaitIpsecIkeEstablished(
     IpsecContext_t *pContext,
     const char *pcIkeName,
@@ -82,6 +155,7 @@ IpsecError_t RekeyIpsecChild(
     IpsecContext_t *pContext,
     const char *pcChildName);
 
+/* Same timeout, cancellation and name-matching contract as the IKE wait. */
 IpsecError_t WaitIpsecChildInstalled(
     IpsecContext_t *pContext,
     const char *pcChildName,
@@ -132,6 +206,10 @@ void FreeIpsecXfrmPolicyList(
 
 IpsecError_t GetIpsecXfrmStatistics(
     IpsecXfrmStatistics_t *pStatistics);
+
+/* Backend-aware alternative to the legacy contextless system diagnostic. */
+IpsecError_t GetIpsecBackendXfrmStatistics(
+    IpsecContext_t *pContext, IpsecXfrmStatistics_t *pStatistics);
 
 IpsecError_t GetIpsecInterfaces(
     IpsecInterfaceList_t *pList);
