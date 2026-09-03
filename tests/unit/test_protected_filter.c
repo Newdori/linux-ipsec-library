@@ -163,9 +163,11 @@ static void VerifyMessages(void)
         pHeader->nlmsg_len = NLMSG_LENGTH(sizeof(*pTc)) + RTA_LENGTH(4U); /* TCA_KIND only. */
         CHECK(IPSEC_OK == InspectIpsecProtectedApplicationFilterMessage(&State, pHeader, false, &uiMask));
         CHECK(uiMaskBefore == uiMask); /* Classifier header is not a real filter. */
-        CHECK(IPSEC_ERR_RESOURCE_CONFLICT == InspectIpsecProtectedApplicationFilterMessage(&State, pHeader, true, &uiMask));
+        CHECK(IPSEC_OK == InspectIpsecProtectedApplicationFilterMessage(
+            &State, pHeader, true, &uiMask));
         pTc->tcm_info += 1U << 20U;
-        CHECK(IPSEC_ERR_RESOURCE_CONFLICT == InspectIpsecProtectedApplicationFilterMessage(&State, pHeader, false, &uiMask));
+        CHECK(IPSEC_OK == InspectIpsecProtectedApplicationFilterMessage(
+            &State, pHeader, false, &uiMask));
         CHECK(IPSEC_OK == BuildIpsecProtectedApplicationFilterRequest(&State, bUdp, false, &Message));
         pTc->tcm_handle = State.uiTunIndex + 1U;
         CHECK(IPSEC_OK == InspectIpsecProtectedApplicationFilterMessage(

@@ -15,6 +15,13 @@
 
 #define NATIVE_APP_PEER_PROTOCOL "RCST/2"
 
+typedef struct NativeAppTrafficSelectorKey {
+    int32_t iFamily;
+    uint8_t aucAddress[sizeof(struct in6_addr)];
+    uint8_t ucAddressLength;
+    uint8_t ucPrefixLength;
+} NativeAppTrafficSelectorKey_t;
+
 static void SetNativeAppPeerError(
     char *pcError,
     uint32_t uiErrorLength,
@@ -88,7 +95,9 @@ static bool IsNativeAppPeerAddress(const char *pcAddress)
            (1 == inet_pton(AF_INET6, pcAddress, aucAddress));
 }
 
-static bool IsNativeAppPeerTrafficSelector(const char *pcSelector)
+static bool ParseNativeAppPeerTrafficSelector(
+    const char *pcSelector,
+    NativeAppTrafficSelectorKey_t *pKey)
 {
     uint8_t aucAddress[sizeof(struct in6_addr)];
     char acAddress[IPSEC_ADDRESS_LENGTH];
@@ -97,6 +106,8 @@ static bool IsNativeAppPeerTrafficSelector(const char *pcSelector)
     size_t zAddressLength;
     uint64_t ullPrefix;
     uint64_t ullMaximumPrefix;
+    uint8_t ucAddressLength;
+    int32_t iFamily;
 
     if (!IsNativeAppPeerToken(pcSelector)) {
         return false;
@@ -114,17 +125,69 @@ static bool IsNativeAppPeerTrafficSelector(const char *pcSelector)
     acAddress[zAddressLength] = '\0';
     if (1 == inet_pton(AF_INET, acAddress, aucAddress)) {
         ullMaximumPrefix = 32U;
+        ucAddressLength = 4U;
+        iFamily = AF_INET;
     }
     else if (1 == inet_pton(AF_INET6, acAddress, aucAddress)) {
         ullMaximumPrefix = 128U;
+        ucAddressLength = 16U;
+        iFamily = AF_INET6;
     }
     else {
         return false;
     }
     errno = 0;
     ullPrefix = strtoull(pcSlash + 1U, &pcEnd, 10);
-    return (0 == errno) && (pcEnd != (pcSlash + 1U)) &&
-        ('\0' == *pcEnd) && (ullPrefix <= ullMaximumPrefix);
+    if ((0 != errno) || (pcEnd == (pcSlash + 1U)) ||
+        ('\0' != *pcEnd) || (ullPrefix > ullMaximumPrefix)) {
+        return false;
+    }
+    if (NULL != pKey) {
+        (void)memset(pKey, 0, sizeof(*pKey));
+        pKey->iFamily = iFamily;
+        (void)memcpy(pKey->aucAddress, aucAddress, ucAddressLength);
+        pKey->ucAddressLength = ucAddressLength;
+        pKey->ucPrefixLength = (uint8_t)ullPrefix;
+    }
+    else {
+        /* The caller requested validation only. */
+    }
+    return true;
+}
+
+static bool IsNativeAppPeerTrafficSelector(const char *pcSelector)
+{
+    return ParseNativeAppPeerTrafficSelector(pcSelector, NULL);
+}
+
+static bool AreNativeAppTrafficSelectorsOverlapping(
+    const NativeAppTrafficSelectorKey_t *pLeft,
+    const NativeAppTrafficSelectorKey_t *pRight)
+{
+    uint8_t ucPrefixLength;
+    uint8_t ucWholeBytes;
+    uint8_t ucRemainingBits;
+    uint8_t ucMask;
+
+    if ((pLeft->iFamily != pRight->iFamily) ||
+        (pLeft->ucAddressLength != pRight->ucAddressLength)) {
+        return false;
+    }
+    ucPrefixLength = (pLeft->ucPrefixLength < pRight->ucPrefixLength) ?
+        pLeft->ucPrefixLength : pRight->ucPrefixLength;
+    ucWholeBytes = ucPrefixLength / 8U;
+    ucRemainingBits = ucPrefixLength % 8U;
+    if ((0U < ucWholeBytes) &&
+        (0 != memcmp(pLeft->aucAddress, pRight->aucAddress,
+                     ucWholeBytes))) {
+        return false;
+    }
+    if (0U == ucRemainingBits) {
+        return true;
+    }
+    ucMask = (uint8_t)(UINT8_MAX << (8U - ucRemainingBits));
+    return (pLeft->aucAddress[ucWholeBytes] & ucMask) ==
+        (pRight->aucAddress[ucWholeBytes] & ucMask);
 }
 
 static bool BuildNativeAppSocketAddress(
@@ -420,6 +483,57 @@ static int32_t FindNativeAppPeerByRemoteAddressLocked(
     return -1;
 }
 
+static IpsecError_t ValidateNativeAppRemoteTrafficSelectorLocked(
+    const NativeAppPeerTable_t *pTable,
+    const NativeAppPeer_t *pPeer,
+    int32_t iIgnoredIndex)
+{
+    NativeAppTrafficSelectorKey_t Candidate;
+    uint32_t uiIndex;
+
+    if (!ParseNativeAppPeerTrafficSelector(
+            pPeer->Config.acRemoteTrafficSelector, &Candidate)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    for (uiIndex = 0U; uiIndex < pTable->uiCount; uiIndex++) {
+        NativeAppTrafficSelectorKey_t Existing;
+
+        if ((0 <= iIgnoredIndex) &&
+            ((uint32_t)iIgnoredIndex == uiIndex)) {
+            continue;
+        }
+        if (!ParseNativeAppPeerTrafficSelector(
+                pTable->aPeers[uiIndex].Config.acRemoteTrafficSelector,
+                &Existing)) {
+            return IPSEC_ERR_INTERNAL;
+        }
+        if (AreNativeAppTrafficSelectorsOverlapping(
+                &Candidate, &Existing)) {
+            return IPSEC_ERR_RESOURCE_CONFLICT;
+        }
+        else {
+            /* Check the next peer-owned remote selector. */
+        }
+    }
+    return IPSEC_OK;
+}
+
+static IpsecError_t ValidateNativeAppRemoteTrafficSelector(
+    NativeAppPeerTable_t *pTable,
+    const NativeAppPeer_t *pPeer)
+{
+    int32_t iExistingIndex;
+    IpsecError_t eError;
+
+    LockNativeAppPeerTable(pTable);
+    iExistingIndex = FindNativeAppPeerByRemoteAddressLocked(
+        pTable, pPeer->Config.acRemoteAddress);
+    eError = ValidateNativeAppRemoteTrafficSelectorLocked(
+        pTable, pPeer, iExistingIndex);
+    UnlockNativeAppPeerTable(pTable);
+    return eError;
+}
+
 static bool CopyNativeAppPeerByRemoteAddress(
     NativeAppPeerTable_t *pTable,
     const char *pcRemoteAddress,
@@ -450,7 +564,8 @@ IpsecError_t UpsertNativeAppPeer(
     IpsecError_t eError;
 
     if ((NULL == pTable) || (NULL == pPeer) || (NULL == pStoredPeer) ||
-        ('\0' == pPeer->Config.acRemoteAddress[0])) {
+        !IsNativeAppPeerAddress(pPeer->Config.acRemoteAddress) ||
+        ('\0' == pPeer->Config.acRemoteTrafficSelector[0])) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     else {
@@ -459,7 +574,12 @@ IpsecError_t UpsertNativeAppPeer(
     LockNativeAppPeerTable(pTable);
     iExistingIndex = FindNativeAppPeerByRemoteAddressLocked(
         pTable, pPeer->Config.acRemoteAddress);
-    if (0 <= iExistingIndex) {
+    eError = ValidateNativeAppRemoteTrafficSelectorLocked(
+        pTable, pPeer, iExistingIndex);
+    if (IPSEC_OK != eError) {
+        /* Preserve selector validation or conflict error. */
+    }
+    else if (0 <= iExistingIndex) {
         NativeAppPeer_t *pExisting =
             &pTable->aPeers[(uint32_t)iExistingIndex];
         bool bSameResourceNames =
@@ -469,11 +589,17 @@ IpsecError_t UpsertNativeAppPeer(
                          pPeer->Config.acChildName)) &&
             (0 == strcmp(pExisting->Config.acCredentialId,
                          pPeer->Config.acCredentialId));
+        bool bSameRemoteTrafficSelector =
+            0 == strcmp(pExisting->Config.acRemoteTrafficSelector,
+                        pPeer->Config.acRemoteTrafficSelector);
+        bool bActive = pExisting->bConnectionLoaded ||
+            pExisting->bIkeEstablished || pExisting->bChildInstalled;
 
-        if (!bSameResourceNames &&
-            (pExisting->bConnectionLoaded || pExisting->bIkeEstablished ||
-             pExisting->bChildInstalled)) {
+        if (!bSameResourceNames && bActive) {
             eError = IPSEC_ERR_INVALID_ARGUMENT;
+        }
+        else if (!bSameRemoteTrafficSelector && bActive) {
+            eError = IPSEC_ERR_RESOURCE_CONFLICT;
         }
         else if (UINT32_MAX == pExisting->uiRegistrationCount) {
             eError = IPSEC_ERR_INTERNAL;
@@ -840,6 +966,17 @@ static IpsecError_t AcceptNativeAppPeerConnection(
         }
     }
     if (IPSEC_OK == eError) {
+        eError = ValidateNativeAppRemoteTrafficSelector(pTable, &Peer);
+        if (IPSEC_ERR_RESOURCE_CONFLICT == eError) {
+            SetNativeAppPeerError(
+                pcError, uiErrorLength,
+                "remote traffic selector overlaps another peer");
+        }
+        else {
+            /* Preserve success or selector validation error. */
+        }
+    }
+    if (IPSEC_OK == eError) {
         const NativeAppConfig_t *pAssignedConfig = &Peer.Config;
         const char *pcMode =
             (IPSEC_MODE_TRANSPORT == pAssignedConfig->eMode) ?
@@ -864,6 +1001,14 @@ static IpsecError_t AcceptNativeAppPeerConnection(
     }
     if (IPSEC_OK == eError) {
         eError = UpsertNativeAppPeer(pTable, &Peer, pPeer);
+        if (IPSEC_ERR_RESOURCE_CONFLICT == eError) {
+            SetNativeAppPeerError(
+                pcError, uiErrorLength,
+                "remote traffic selector overlaps another peer");
+        }
+        else {
+            /* Preserve the peer-table result. */
+        }
     }
     if (0 <= iPeerSocket) {
         (void)close(iPeerSocket);
@@ -1135,6 +1280,14 @@ IpsecError_t RegisterNativeAppPeer(
     }
     if (IPSEC_OK == eError) {
         eError = UpsertNativeAppPeer(pTable, &Peer, pPeer);
+        if (IPSEC_ERR_RESOURCE_CONFLICT == eError) {
+            SetNativeAppPeerError(
+                pcError, uiErrorLength,
+                "remote traffic selector overlaps another peer");
+        }
+        else {
+            /* Preserve the peer-table result. */
+        }
     }
     (void)close(iSocket);
     return eError;

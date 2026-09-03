@@ -305,6 +305,12 @@ source address is not treated as the IPsec endpoint. The initiator command
 without an address binds the listener to the wildcard address selected for the
 configured IP family.
 
+The initiator peer table rejects overlapping remote traffic-selector networks
+owned by different peers. The comparison uses IPv4/IPv6 CIDR ranges, so exact
+duplicates and subnet containment are conflicts, while adjacent subnets and
+selectors from different address families are allowed. An active peer must be
+torn down before its remote traffic selector can be changed.
+
 All ordinary connection, credential, IKE, CHILD, rekey, show, loop, and
 algorithm-test commands remain available. Automated traffic-oriented algorithm
 tests are intended for `SYSTEM/SYSTEM`; packet APPLICATION verification is an
