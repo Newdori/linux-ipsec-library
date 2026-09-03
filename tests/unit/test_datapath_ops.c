@@ -160,8 +160,40 @@ IpsecError_t InstallIpsecProtectedApplicationFilters(
 IpsecError_t InspectIpsecProtectedApplicationEndpoint(
     const IpsecProtectedApplicationState_t *pState)
 {
+    return (pState->iTunFd >= 0) ?
+        IPSEC_OK : IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
+}
+
+IpsecError_t InspectIpsecProtectedApplicationFilters(
+    const IpsecProtectedApplicationState_t *pState, bool bRequireEmpty)
+{
+    if (bRequireEmpty) {
+        return IPSEC_OK;
+    }
     return (pState->bRawFilter && pState->bUdpFilter) ?
         IPSEC_OK : IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
+}
+
+IpsecError_t RemoveIpsecProtectedApplicationFilters(
+    IpsecProtectedApplicationState_t *pState)
+{
+    pState->bRawFilter = false;
+    pState->bUdpFilter = false;
+    return IPSEC_OK;
+}
+
+const char *GetIpsecErrorString(IpsecError_t eError)
+{
+    (void)eError;
+    return "test error";
+}
+
+void LogIpsec(const IpsecContext_t *pContext, IpsecLogLevel_t eLevel,
+    const char *pcFormat, ...)
+{
+    (void)pContext;
+    (void)eLevel;
+    (void)pcFormat;
 }
 
 void DestroyIpsecProtectedApplicationEndpoint(IpsecContext_t *pContext,
@@ -407,6 +439,65 @@ static void VerifyDefaultsAndPacketTypes(void)
     CHECK(IPSEC_ERR_PACKET_TYPE == ValidateIpsecProtectedPacket(&Packet));
 }
 
+static void VerifyDynamicProtectedPeers(void)
+{
+    const char *apcLocal[] = {"192.0.2.1"};
+    const char *apcRemote[] = {"192.0.2.2"};
+    const char *apcSecondRemote[] = {"192.0.2.3"};
+    IpsecConnectionConfig_t Connection = {0};
+    IpsecConnectionConfig_t SecondConnection;
+    IpsecContext_t Context = {0};
+    IpsecDatapathConfig_t Config = CreateTestConfig(
+        IPSEC_DATAPATH_PREFER_KERNEL_LIBIPSEC,
+        IPSEC_PACKET_PATH_APPLICATION, IPSEC_PACKET_PATH_SYSTEM);
+    IpsecDatapathStatusEx_t Status = {.uiStructSize = sizeof(Status)};
+    bool bAdded = false;
+
+    Config.acProtectedLocalAddress[0] = '\0';
+    Config.acProtectedRemoteAddress[0] = '\0';
+    Connection.pcName = "vpn";
+    Connection.LocalAddresses.ppcItems = apcLocal;
+    Connection.LocalAddresses.uiCount = 1U;
+    Connection.RemoteAddresses.ppcItems = apcRemote;
+    Connection.RemoteAddresses.uiCount = 1U;
+    SecondConnection = Connection;
+    SecondConnection.pcName = "vpn-second";
+    SecondConnection.RemoteAddresses.ppcItems = apcSecondRemote;
+    CHECK(IPSEC_OK == ConfigureIpsecDatapath(&Context, &Config));
+    CHECK(IPSEC_OK == InitializeIpsecDatapath(&Context));
+    CHECK(IPSEC_OK == InitializeIpsecProtectedPath(&Context));
+    CHECK(IPSEC_OK == InitializeIpsecPlainPath(&Context));
+    CHECK(IPSEC_OK == RegisterIpsecProtectedPeerInternal(
+        &Context, &Connection, &bAdded));
+    CHECK(bAdded);
+    CHECK(MatchIpsecProtectedPeerInternal(
+        &Context, "192.0.2.1", "192.0.2.2"));
+    bAdded = true;
+    CHECK(IPSEC_OK == RegisterIpsecProtectedPeerInternal(
+        &Context, &Connection, &bAdded));
+    CHECK(!bAdded);
+    CHECK(IPSEC_OK == RegisterIpsecProtectedPeerInternal(
+        &Context, &SecondConnection, &bAdded));
+    CHECK(bAdded);
+    CHECK(MatchIpsecProtectedPeerInternal(
+        &Context, "192.0.2.1", "192.0.2.3"));
+    guiChildren = 1U;
+    CHECK(IPSEC_OK == GetIpsecDatapathStatusEx(&Context, &Status));
+    CHECK(Status.bTrafficReady && (1U == Status.uiInstalledChildCount));
+    CHECK(IPSEC_OK == UnregisterIpsecProtectedPeerInternal(&Context, "vpn"));
+    CHECK(!MatchIpsecProtectedPeerInternal(
+        &Context, "192.0.2.1", "192.0.2.2"));
+    CHECK(IPSEC_OK == UnregisterIpsecProtectedPeerInternal(&Context, "vpn"));
+    CHECK(IPSEC_OK == UnregisterIpsecProtectedPeerInternal(
+        &Context, "vpn-second"));
+    CHECK(!MatchIpsecProtectedPeerInternal(
+        &Context, "192.0.2.1", "192.0.2.3"));
+    guiChildren = 0U;
+    DeinitializeIpsecPlainPath(&Context);
+    DeinitializeIpsecProtectedPath(&Context);
+    DeinitializeIpsecDatapath(&Context);
+}
+
 int main(void)
 {
     IpsecDatapathPreference_t aeBackends[] = {
@@ -430,7 +521,8 @@ int main(void)
     }
     VerifyDefaultsAndPacketTypes();
     VerifyFailures();
+    VerifyDynamicProtectedPeers();
     CHECK(4U == guiSubmissions);
-    (void)puts("PASS: eight backend/packet-path dispatch combinations, rollback and cleanup (mock OS)");
+    (void)puts("PASS: backend/path dispatch, dynamic 1:N peer scope, rollback and cleanup (mock OS)");
     return 0;
 }

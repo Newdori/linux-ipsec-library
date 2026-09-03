@@ -15,6 +15,8 @@ static bool VerifyDatapathSettings(void)
     CHECK(IPSEC_PACKET_PATH_SYSTEM == Config.Datapath.eProtectedPacketPath);
     CHECK(IPSEC_PACKET_PATH_SYSTEM == Config.Datapath.ePlainPacketPath);
     CHECK(IPSEC_DATAPATH_PREFER_AUTO == Config.Datapath.ePreference);
+    CHECK(NATIVE_APP_PLAIN_NETFILTER_INPUT ==
+          Config.ePlainNetfilterHook);
     CHECK(IPSEC_ERR_INVALID_ARGUMENT == SetNativeAppConfigSetting(
         NULL, "protected_packet_path", "application"));
     CHECK(IPSEC_ERR_INVALID_ARGUMENT == SetNativeAppConfigSetting(
@@ -24,21 +26,26 @@ static bool VerifyDatapathSettings(void)
     CHECK(IPSEC_OK == SetNativeAppConfigSetting(
         &Config, "protected_packet_path", "application"));
     CHECK(IPSEC_OK != ValidateNativeAppDatapathConfig(&Config));
-    CHECK(IPSEC_OK == SetNativeAppConfigSetting(&Config, "local_ip", "192.0.2.1"));
-    CHECK(IPSEC_OK == SetNativeAppConfigSetting(
-        &Config, "protected_local_ip", "192.0.2.1"));
-    CHECK(IPSEC_OK == SetNativeAppConfigSetting(
-        &Config, "protected_remote_ip", "192.0.2.2"));
     CHECK(IPSEC_OK == SetNativeAppConfigSetting(
         &Config, "protected_egress_interface", "eth-test.1"));
     CHECK(IPSEC_OK == SetNativeAppConfigSetting(
         &Config, "protected_interface", "ipsec-path"));
     CHECK(IPSEC_OK == ValidateNativeAppDatapathConfig(&Config));
     CHECK(IPSEC_OK == SetNativeAppConfigSetting(
+        &Config, "protected_local_ip", "192.0.2.1"));
+    CHECK(IPSEC_OK != ValidateNativeAppDatapathConfig(&Config));
+    CHECK(IPSEC_OK == SetNativeAppConfigSetting(
+        &Config, "protected_remote_ip", "192.0.2.2"));
+    CHECK(IPSEC_OK == ValidateNativeAppDatapathConfig(&Config));
+    CHECK(IPSEC_OK == SetNativeAppConfigSetting(
         &Config, "plain_packet_path", "application"));
     CHECK(IPSEC_OK != ValidateNativeAppDatapathConfig(&Config));
     CHECK(IPSEC_OK == SetNativeAppConfigSetting(
         &Config, "plain_queue_number", "32002"));
+    CHECK(IPSEC_OK == SetNativeAppConfigSetting(
+        &Config, "plain_netfilter_hook", "forward"));
+    CHECK(NATIVE_APP_PLAIN_NETFILTER_FORWARD ==
+          Config.ePlainNetfilterHook);
     CHECK(IPSEC_OK == ValidateNativeAppDatapathConfig(&Config));
     Copy = Config;
     CHECK(AreNativeAppContextSettingsEqual(&Copy, &Config));
@@ -49,6 +56,9 @@ static bool VerifyDatapathSettings(void)
     Copy = Config;
     Copy.Datapath.ePlainPacketPath = IPSEC_PACKET_PATH_SYSTEM;
     CHECK(!AreNativeAppContextSettingsEqual(&Copy, &Config));
+    Copy = Config;
+    Copy.ePlainNetfilterHook = NATIVE_APP_PLAIN_NETFILTER_INPUT;
+    CHECK(!AreNativeAppContextSettingsEqual(&Copy, &Config));
     CHECK(IPSEC_OK == SetNativeAppConfigSetting(
         &Config, "protected_filter_priority", "65534"));
     CHECK(65534U == Config.Datapath.usProtectedFilterPriority);
@@ -58,6 +68,8 @@ static bool VerifyDatapathSettings(void)
         &Config, "plain_queue_number", "0"));
     CHECK(IPSEC_ERR_INVALID_ARGUMENT == SetNativeAppConfigSetting(
         &Config, "plain_queue_number", "65536"));
+    CHECK(IPSEC_ERR_INVALID_ARGUMENT == SetNativeAppConfigSetting(
+        &Config, "plain_netfilter_hook", "prerouting"));
     return true;
 }
 

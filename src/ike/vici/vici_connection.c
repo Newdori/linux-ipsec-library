@@ -582,6 +582,7 @@ IpsecError_t AddIpsecConnection(
     ViciBuffer_t Message = {0};
     ViciCommandResult_t Result = {0};
     IpsecError_t eError;
+    bool bProtectedPeerAdded = false;
 
     if (NULL == pContext) {
         eError = IPSEC_ERR_INVALID_ARGUMENT;
@@ -591,17 +592,13 @@ IpsecError_t AddIpsecConnection(
     }
     if ((IPSEC_OK == eError) &&
         (IPSEC_PACKET_PATH_APPLICATION == pContext->DatapathConfig.eProtectedPacketPath)) {
-        /* Protected APPLICATION is scoped to one fixed outer IPv4 pair. Do not silently
-         * let a configuration loaded through this context bypass its sink.
+        /* Protected APPLICATION currently supports one literal outer IPv4
+         * address per side. Each accepted connection owns a scoped filter pair.
          * NAT detection may still select UDP ESP; the output guard drops it.
          */
         if (pConfig->bForceUdpEncapsulation || pConfig->bEnableMobike ||
             (1U != pConfig->LocalAddresses.uiCount) ||
-            (1U != pConfig->RemoteAddresses.uiCount) ||
-            (0 != strcmp(pConfig->LocalAddresses.ppcItems[0],
-                         pContext->DatapathConfig.acProtectedLocalAddress)) ||
-            (0 != strcmp(pConfig->RemoteAddresses.ppcItems[0],
-                         pContext->DatapathConfig.acProtectedRemoteAddress))) {
+            (1U != pConfig->RemoteAddresses.uiCount)) {
             eError = IPSEC_ERR_NOT_SUPPORTED;
         }
     }
@@ -612,6 +609,13 @@ IpsecError_t AddIpsecConnection(
         /* Preserve validation error. */
     }
     if (IPSEC_OK == eError) {
+        eError = RegisterIpsecProtectedPeerInternal(
+            pContext, pConfig, &bProtectedPeerAdded);
+    }
+    else {
+        /* Preserve message error. */
+    }
+    if (IPSEC_OK == eError) {
         eError = ExecuteViciCommand(pContext, "load-conn", &Message, NULL,
                                     NULL, NULL, NULL, &Result);
     }
@@ -619,6 +623,22 @@ IpsecError_t AddIpsecConnection(
         /* Preserve message error. */
     }
     DestroyViciBuffer(&Message);
+    if ((IPSEC_OK != eError) && bProtectedPeerAdded) {
+        IpsecError_t eCleanupError = UnregisterIpsecProtectedPeerInternal(
+            pContext, pConfig->pcName);
+
+        if (IPSEC_OK != eCleanupError) {
+            LogIpsec(pContext, IPSEC_LOG_WARNING,
+                "protected APPLICATION rollback failed for %s: %s",
+                pConfig->pcName, GetIpsecErrorString(eCleanupError));
+        }
+        else {
+            /* Preserve the original connection-load error. */
+        }
+    }
+    else {
+        /* Loaded connections retain their protected peer scope. */
+    }
     return eError;
 }
 
@@ -656,6 +676,12 @@ IpsecError_t RemoveIpsecConnection(
         /* Preserve message error. */
     }
     DestroyViciBuffer(&Message);
+    if (IPSEC_OK == eError) {
+        eError = UnregisterIpsecProtectedPeerInternal(pContext, pcName);
+    }
+    else {
+        /* Keep the filter while unload completion is uncertain. */
+    }
     return eError;
 }
 

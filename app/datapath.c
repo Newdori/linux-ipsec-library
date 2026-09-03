@@ -13,7 +13,8 @@ bool IsNativeAppDatapathKey(const char *pcKey)
          (0 == strcmp("plain_packet_path", pcKey)) ||
          (0 == strcmp("kernel_libipsec_tun", pcKey)) ||
          (0 == strncmp("protected_", pcKey, 10U)) ||
-         (0 == strcmp("plain_queue_number", pcKey)));
+         (0 == strcmp("plain_queue_number", pcKey)) ||
+         (0 == strcmp("plain_netfilter_hook", pcKey)));
 }
 
 IpsecError_t SetNativeAppDatapathSetting(
@@ -75,6 +76,19 @@ IpsecError_t SetNativeAppDatapathSetting(
             return IPSEC_ERR_INVALID_ARGUMENT;
         }
         pDatapath->usPlainQueueNumber = (uint16_t)uiPriority;
+    }
+    else if (0 == strcmp("plain_netfilter_hook", pcKey)) {
+        if (0 == strcmp("input", pcValue)) {
+            pConfig->ePlainNetfilterHook =
+                NATIVE_APP_PLAIN_NETFILTER_INPUT;
+        }
+        else if (0 == strcmp("forward", pcValue)) {
+            pConfig->ePlainNetfilterHook =
+                NATIVE_APP_PLAIN_NETFILTER_FORWARD;
+        }
+        else {
+            return IPSEC_ERR_INVALID_ARGUMENT;
+        }
     }
     else {
         if (0 == strcmp("kernel_libipsec_tun", pcKey)) {
@@ -147,10 +161,19 @@ IpsecError_t ValidateNativeAppDatapathConfig(const NativeAppConfig_t *pConfig)
         ((IPSEC_PACKET_PATH_SYSTEM != pDatapath->eProtectedPacketPath) &&
          (IPSEC_PACKET_PATH_APPLICATION != pDatapath->eProtectedPacketPath)) ||
         ((IPSEC_PACKET_PATH_SYSTEM != pDatapath->ePlainPacketPath) &&
-         (IPSEC_PACKET_PATH_APPLICATION != pDatapath->ePlainPacketPath))) {
+         (IPSEC_PACKET_PATH_APPLICATION != pDatapath->ePlainPacketPath)) ||
+        ((NATIVE_APP_PLAIN_NETFILTER_INPUT !=
+          pConfig->ePlainNetfilterHook) &&
+         (NATIVE_APP_PLAIN_NETFILTER_FORWARD !=
+          pConfig->ePlainNetfilterHook))) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     if (IPSEC_PACKET_PATH_APPLICATION == pDatapath->eProtectedPacketPath) {
+        bool bHasProtectedLocal =
+            '\0' != pDatapath->acProtectedLocalAddress[0];
+        bool bHasProtectedRemote =
+            '\0' != pDatapath->acProtectedRemoteAddress[0];
+
         if (!IsNativeAppInterfaceNameValid(pDatapath->acProtectedInterfaceName, false) ||
             !IsNativeAppInterfaceNameValid(pDatapath->acProtectedEgressInterfaceName, false) ||
             (0 == strcmp(pDatapath->acProtectedInterfaceName,
@@ -160,17 +183,22 @@ IpsecError_t ValidateNativeAppDatapathConfig(const NativeAppConfig_t *pConfig)
             (0 == strcmp(pDatapath->acProtectedEgressInterfaceName,
                          pDatapath->acKernelLibipsecTunName)) ||
             (UINT16_MAX == pDatapath->usProtectedFilterPriority) ||
-            (1 != inet_pton(AF_INET, pDatapath->acProtectedLocalAddress, &Local)) ||
-            (1 != inet_pton(AF_INET, pDatapath->acProtectedRemoteAddress, &Remote)) ||
-            (Local.s_addr == Remote.s_addr) ||
-            (0 == Local.s_addr) || (0 == Remote.s_addr) ||
-            (ntohl(Local.s_addr) >= 0xe0000000U) ||
-            (ntohl(Remote.s_addr) >= 0xe0000000U) ||
-            (0 != strcmp(pConfig->acLocalAddress, pDatapath->acProtectedLocalAddress)) ||
-            (('\0' != pConfig->acRemoteAddress[0]) &&
-             (0 != strcmp(pConfig->acRemoteAddress,
-                           pDatapath->acProtectedRemoteAddress)))) {
+            (bHasProtectedLocal != bHasProtectedRemote)) {
             return IPSEC_ERR_INVALID_ARGUMENT;
+        }
+        if (bHasProtectedLocal &&
+            ((1 != inet_pton(AF_INET,
+                             pDatapath->acProtectedLocalAddress, &Local)) ||
+             (1 != inet_pton(AF_INET,
+                             pDatapath->acProtectedRemoteAddress, &Remote)) ||
+             (Local.s_addr == Remote.s_addr) ||
+             (0 == Local.s_addr) || (0 == Remote.s_addr) ||
+             (ntohl(Local.s_addr) >= 0xe0000000U) ||
+             (ntohl(Remote.s_addr) >= 0xe0000000U))) {
+            return IPSEC_ERR_INVALID_ARGUMENT;
+        }
+        else {
+            /* Empty pair selects dynamic per-connection protected filters. */
         }
     }
     else {
@@ -205,6 +233,7 @@ bool AreNativeAppContextSettingsEqual(
         (pA->ePlainPacketPath == pB->ePlainPacketPath) &&
         (pA->usProtectedFilterPriority == pB->usProtectedFilterPriority) &&
         (pA->usPlainQueueNumber == pB->usPlainQueueNumber) &&
+        (pLeft->ePlainNetfilterHook == pRight->ePlainNetfilterHook) &&
         (0 == strcmp(pA->acKernelLibipsecTunName, pB->acKernelLibipsecTunName)) &&
         (0 == strcmp(pA->acProtectedInterfaceName, pB->acProtectedInterfaceName)) &&
         (0 == strcmp(pA->acProtectedEgressInterfaceName, pB->acProtectedEgressInterfaceName)) &&
@@ -231,8 +260,9 @@ void ShowNativeAppDatapathConfig(const NativeAppConfig_t *pConfig)
         "  Protected Egress : %s\n"
         "  Protected Local  : %s\n"
         "  Protected Remote : %s\n"
-        "  TC Priority      : %" PRIu16 " (+1 reserved)\n"
-        "  Plain NFQUEUE    : %" PRIu16 "\n",
+        "  TC Priority      : %" PRIu16 " (+1; per-peer handles)\n"
+        "  Plain NFQUEUE    : %" PRIu16 "\n"
+        "  Netfilter Hook   : %s (OS-owned rule)\n",
         pcBackend,
         (IPSEC_PACKET_PATH_APPLICATION == pDatapath->eProtectedPacketPath) ?
             "application" : "system",
@@ -241,8 +271,13 @@ void ShowNativeAppDatapathConfig(const NativeAppConfig_t *pConfig)
         ('\0' == pDatapath->acKernelLibipsecTunName[0]) ? "<discover>" :
             pDatapath->acKernelLibipsecTunName,
         pDatapath->acProtectedInterfaceName, pDatapath->acProtectedEgressInterfaceName,
-        pDatapath->acProtectedLocalAddress, pDatapath->acProtectedRemoteAddress,
+        ('\0' == pDatapath->acProtectedLocalAddress[0]) ? "<per-connection>" :
+            pDatapath->acProtectedLocalAddress,
+        ('\0' == pDatapath->acProtectedRemoteAddress[0]) ? "<per-connection>" :
+            pDatapath->acProtectedRemoteAddress,
         (0U == pDatapath->usProtectedFilterPriority) ? (uint16_t)32000U :
             pDatapath->usProtectedFilterPriority,
-        pDatapath->usPlainQueueNumber);
+        pDatapath->usPlainQueueNumber,
+        (NATIVE_APP_PLAIN_NETFILTER_FORWARD ==
+         pConfig->ePlainNetfilterHook) ? "FORWARD" : "INPUT");
 }

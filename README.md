@@ -117,23 +117,25 @@ Calling a packet API while its corresponding path is `SYSTEM` returns
 
 The implementation reuses the existing scoped TC/TUN mechanism:
 
-1. the application supplies a dedicated physical egress interface and one
-   literal outer IPv4 peer pair;
-2. the OS supplies an empty `clsact` qdisc;
-3. the library creates a non-persistent protected-path TUN;
-4. scoped TC filters redirect matching raw ESP from physical egress to that
+1. the application supplies a dedicated physical egress interface;
+2. each loaded connection supplies one literal local/remote outer IPv4 pair;
+3. the OS supplies an empty `clsact` qdisc;
+4. the library creates a non-persistent protected-path TUN;
+5. connection-scoped TC filters redirect matching raw ESP from physical egress to that
    TUN with stolen semantics, so the packet is not cloned to the NIC;
-5. the receive API reads the complete packet from the TUN;
-6. the submit API validates and writes the inbound packet to the protected TUN.
+6. the receive API reads the complete packet from the TUN;
+7. the submit API validates and writes the inbound packet to the protected TUN.
 
 The library owns only its TUN and reserved filters. It does not add routes,
-addresses, firewall rules, or qdiscs. The two configured TC priorities must be
-reserved exclusively for the context. Stop traffic and terminate affected SAs
-before context destruction; cleanup restores ordinary egress behavior.
+addresses, firewall rules, or qdiscs. The configured TC priority pair and the
+library handle namespace must be reserved for the context. Connection load
+installs a peer filter pair, connection unload removes it, and failed loads are
+rolled back. Stop traffic and terminate affected SAs before context destruction;
+cleanup retries removal of every registered peer filter.
 
 This first implementation is IPv4 raw ESP only. NAT-T/UDP-encapsulated ESP,
-fragmented outer IPv4, hardware-offloaded XFRM SAs, and 1:N peer scope on one
-protected APPLICATION context are rejected. kernel-libipsec protected delivery
+fragmented outer IPv4 and hardware-offloaded XFRM SAs are rejected. One context
+supports up to 256 connection-scoped peers. kernel-libipsec protected delivery
 requires strongSwan 5.9.11 or newer with the plugin's raw-ESP support enabled.
 These requirements do not apply to a `SYSTEM` protected path.
 
@@ -173,6 +175,12 @@ Plain APPLICATION requires continuous queue draining. Treat an application
 exit, queue overflow, or missing queue consumer as fail-closed packet loss and
 monitor it operationally.
 
+The diagnostic application records the expected rule hook as
+`plain_netfilter_hook=input|forward`. Use `input` when the decrypted inner
+destination is local to the host and `forward` when Linux would route it
+through the host. This setting documents and validates deployment intent; it
+does not create, replace, or delete an OS Netfilter rule.
+
 ## Datapath configuration
 
 ```c
@@ -200,10 +208,12 @@ Protected APPLICATION additionally uses:
 ```text
 acProtectedInterfaceName
 acProtectedEgressInterfaceName
-acProtectedLocalAddress
-acProtectedRemoteAddress
 usProtectedFilterPriority
 ```
+
+Leave `acProtectedLocalAddress` and `acProtectedRemoteAddress` empty for normal
+per-connection scope. Supplying both preserves the legacy single-peer fixed
+scope and rejects a connection whose outer pair differs.
 
 Plain APPLICATION additionally requires:
 
@@ -246,7 +256,9 @@ running and expose VICI. The library never starts or stops it.
 
 ## Diagnostic application
 
-The split example files are under `app/config/`. New packet-path keys are:
+Role-specific example files are under `app/config/`. Each file contains both
+application defaults and the current algorithm policy. The optional
+`management.conf` input remains a legacy override. New packet-path keys are:
 
 ```text
 datapath_backend=auto
@@ -257,12 +269,15 @@ kernel_libipsec_tun=
 # Protected APPLICATION only
 protected_interface=ipsec-path
 protected_egress_interface=eth0
-protected_local_ip=192.0.2.1
-protected_remote_ip=192.0.2.2
 protected_filter_priority=32000
+
+# Optional legacy fixed scope; omit both for peer/connection-derived filters
+# protected_local_ip=192.0.2.1
+# protected_remote_ip=192.0.2.2
 
 # Plain APPLICATION only
 plain_queue_number=32002
+plain_netfilter_hook=input
 ```
 
 No compatibility aliases for previous packet-path names are accepted.
@@ -277,7 +292,18 @@ show packet-path
 packet protected-receive FILE [--timeout-ms N]
 packet protected-submit FILE
 packet plain-receive FILE [--timeout-ms N]
+peer listen port 39002
+peer listen address 192.0.2.10 port 39002
+peer listen show
+peer listen stop
+peer register 192.0.2.10 39002
 ```
+
+Peer registration uses TCP only as a control plane. The initiator and
+responder exchange their IKE/ESP outer endpoint and inner `local_ts`; the TCP
+source address is not treated as the IPsec endpoint. The initiator command
+without an address binds the listener to the wildcard address selected for the
+configured IP family.
 
 All ordinary connection, credential, IKE, CHILD, rekey, show, loop, and
 algorithm-test commands remain available. Automated traffic-oriented algorithm

@@ -96,7 +96,7 @@ IpsecError_t InspectIpsecProtectedApplicationEndpoint(const IpsecProtectedApplic
     struct ifreq Request;
     int32_t iSocket;
     IpsecError_t eError = IPSEC_OK;
-    if ((pState->iTunFd < 0) || !pState->bRawFilter || !pState->bUdpFilter) {
+    if (pState->iTunFd < 0) {
         return IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
     }
     iSocket = (int32_t)socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
@@ -120,9 +120,6 @@ IpsecError_t InspectIpsecProtectedApplicationEndpoint(const IpsecProtectedApplic
         }
     }
     (void)close(iSocket);
-    if (IPSEC_OK == eError) {
-        eError = InspectIpsecProtectedApplicationFilters(pState, false);
-    }
     return eError;
 }
 

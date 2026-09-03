@@ -149,7 +149,7 @@ static void LogNativeApp(
 static void PrintNativeAppUsage(const char *pcProgram)
 {
     (void)printf(
-        "Usage: %s --app-config FILE --management-config FILE\n"
+        "Usage: %s --app-config FILE [--management-config LEGACY_FILE]\n"
         "          [--verbose] [COMMAND ...]\n"
         "       %s [--config LEGACY_FILE] [--verbose] [COMMAND ...]\n"
         "       %s --generate-psk FILE\n"
@@ -183,8 +183,12 @@ static void PrintNativeAppHelp(void)
         "  child terminate [NAME]       terminate a CHILD SA\n"
         "  child rekey [NAME]           rekey a CHILD SA\n"
         "  child wait [NAME]            wait for an installed CHILD SA\n"
-        "  peer register                responder registers with initiator\n"
-        "                               initiator listener starts automatically\n"
+        "  peer listen port PORT        listen on all local control addresses\n"
+        "  peer listen address IP port PORT\n"
+        "                               listen on one control address\n"
+        "  peer listen show             show listener state and endpoint\n"
+        "  peer listen stop             stop the initiator listener\n"
+        "  peer register IP PORT        responder registers with initiator\n"
         "  peer show                    show the in-memory peer table\n"
         "  peer select PEER_ID          select a peer for control commands\n"
         "  show [SCOPE]                 show a compact table (summary default)\n"
@@ -405,6 +409,8 @@ static void ShowNativeAppConfig(const NativeAppSession_t *pSession)
         "  Role             : %s\n"
         "  Local Address    : %s\n"
         "  Remote Address   : %s\n"
+        "  Local TS         : %s\n"
+        "  Remote TS        : %s\n"
         "  Local ID         : %s\n"
         "  Remote ID        : %s\n"
         "  PSK File         : %s\n"
@@ -428,7 +434,9 @@ static void ShowNativeAppConfig(const NativeAppSession_t *pSession)
             pSession->acManagementConfigPath : "<none>",
         pSession->bConfigValid ? "yes" : "no",
         GetNativeAppRoleText(pConfig->eRole), pConfig->acLocalAddress,
-        pConfig->acRemoteAddress, pConfig->acLocalId, pConfig->acRemoteId,
+        pConfig->acRemoteAddress, pConfig->acLocalTrafficSelector,
+        pConfig->acRemoteTrafficSelector, pConfig->acLocalId,
+        pConfig->acRemoteId,
         pConfig->acPskFile, pConfig->acOutputRoot, pConfig->acViciSocket,
         pConfig->acConnectionName, pConfig->acChildName,
         pConfig->acCredentialId, pConfig->acPeerServerAddress,
@@ -795,6 +803,7 @@ static IpsecError_t ExecuteNativeAppPeerCommand(
     char **ppcArguments)
 {
     NativeAppPeer_t Peer;
+    NativeAppConfig_t PeerConfig;
     const char *pcPeerId = NULL;
     char acError[NATIVE_APP_ERROR_TEXT_LENGTH] = {0};
     IpsecError_t eError;
@@ -810,17 +819,131 @@ static IpsecError_t ExecuteNativeAppPeerCommand(
         pcPeerId = ppcArguments[2];
         eError = SelectNativeAppPeer(pSession, pcPeerId, &Peer);
     }
-    else if ((2U == uiArgumentCount) &&
+    else if ((4U == uiArgumentCount) &&
+             (0 == strcmp("listen", ppcArguments[1])) &&
+             (0 == strcmp("port", ppcArguments[2]))) {
+        uint32_t uiPort;
+
+        if ((NATIVE_APP_ROLE_INITIATOR != pSession->BaseConfig.eRole) ||
+            IsNativeAppPeerListenerRunning(&pSession->PeerListener)) {
+            return IPSEC_ERR_RESOURCE_CONFLICT;
+        }
+        if (!ParseNativeAppNumber(ppcArguments[3], &uiPort) ||
+            (0U == uiPort) || (uiPort > UINT16_MAX)) {
+            return IPSEC_ERR_INVALID_ARGUMENT;
+        }
+        PeerConfig = pSession->BaseConfig;
+        PeerConfig.acPeerServerAddress[0] = '\0';
+        PeerConfig.uiPeerPort = uiPort;
+        eError = StartNativeAppPeerListener(
+            &pSession->PeerListener, &PeerConfig, &pSession->PeerTable,
+            HandleNativeAppPeerListenerEvent, pSession, acError,
+            sizeof(acError));
+        if (IPSEC_OK == eError) {
+            const char *pcAnyAddress =
+                (NULL != strchr(PeerConfig.acLocalAddress, ':')) ?
+                    "::" : "0.0.0.0";
+
+            (void)printf("peer listener started: %s:%" PRIu32 "\n",
+                         pcAnyAddress, uiPort);
+        }
+        else {
+            /* Report the listener error below. */
+        }
+        return eError;
+    }
+    else if ((6U == uiArgumentCount) &&
+             (0 == strcmp("listen", ppcArguments[1])) &&
+             (0 == strcmp("address", ppcArguments[2])) &&
+             (0 == strcmp("port", ppcArguments[4]))) {
+        uint32_t uiPort;
+
+        if ((NATIVE_APP_ROLE_INITIATOR != pSession->BaseConfig.eRole) ||
+            IsNativeAppPeerListenerRunning(&pSession->PeerListener)) {
+            return IPSEC_ERR_RESOURCE_CONFLICT;
+        }
+        if (!ParseNativeAppNumber(ppcArguments[5], &uiPort) ||
+            (0U == uiPort) || (uiPort > UINT16_MAX)) {
+            return IPSEC_ERR_INVALID_ARGUMENT;
+        }
+        PeerConfig = pSession->BaseConfig;
+        if (!CopyNativeAppSessionText(
+                PeerConfig.acPeerServerAddress,
+                sizeof(PeerConfig.acPeerServerAddress), ppcArguments[3])) {
+            return IPSEC_ERR_BUFFER_TOO_SMALL;
+        }
+        PeerConfig.uiPeerPort = uiPort;
+        eError = StartNativeAppPeerListener(
+            &pSession->PeerListener, &PeerConfig, &pSession->PeerTable,
+            HandleNativeAppPeerListenerEvent, pSession, acError,
+            sizeof(acError));
+        if (IPSEC_OK == eError) {
+            (void)printf("peer listener started: %s:%" PRIu32 "\n",
+                         PeerConfig.acPeerServerAddress, uiPort);
+        }
+        else {
+            /* Report the listener error below. */
+        }
+        return eError;
+    }
+    else if ((3U == uiArgumentCount) &&
+             (0 == strcmp("listen", ppcArguments[1])) &&
+             (0 == strcmp("show", ppcArguments[2]))) {
+        const NativeAppPeerListener_t *pListener = &pSession->PeerListener;
+        const char *pcAddress = pListener->Config.acPeerServerAddress;
+
+        if ('\0' == pcAddress[0]) {
+            pcAddress = (NULL != strchr(
+                pListener->Config.acLocalAddress, ':')) ? "::" :
+                "0.0.0.0";
+        }
+        (void)printf("peer listener: %s address=%s port=%" PRIu32 "\n",
+                     IsNativeAppPeerListenerRunning(pListener) ?
+                         "running" : "stopped",
+                     pcAddress, pListener->Config.uiPeerPort);
+        return IPSEC_OK;
+    }
+    else if ((3U == uiArgumentCount) &&
+             (0 == strcmp("listen", ppcArguments[1])) &&
+             (0 == strcmp("stop", ppcArguments[2]))) {
+        if (NATIVE_APP_ROLE_INITIATOR != pSession->BaseConfig.eRole) {
+            return IPSEC_ERR_NOT_SUPPORTED;
+        }
+        StopNativeAppPeerListener(&pSession->PeerListener);
+        (void)puts("peer listener stopped");
+        return IPSEC_OK;
+    }
+    else if (((4U == uiArgumentCount) ||
+              (2U == uiArgumentCount)) &&
              (0 == strcmp("register", ppcArguments[1]))) {
         if (NATIVE_APP_ROLE_RESPONDER != pSession->BaseConfig.eRole) {
             return IPSEC_ERR_NOT_SUPPORTED;
         }
         else {
+            PeerConfig = pSession->BaseConfig;
+            if (4U == uiArgumentCount) {
+                if (!CopyNativeAppSessionText(
+                        PeerConfig.acPeerServerAddress,
+                        sizeof(PeerConfig.acPeerServerAddress),
+                        ppcArguments[2]) ||
+                    !ParseNativeAppNumber(ppcArguments[3],
+                                          &PeerConfig.uiPeerPort) ||
+                    (0U == PeerConfig.uiPeerPort) ||
+                    (PeerConfig.uiPeerPort > UINT16_MAX)) {
+                    return IPSEC_ERR_INVALID_ARGUMENT;
+                }
+            }
+            else if ('\0' == PeerConfig.acPeerServerAddress[0]) {
+                return IPSEC_ERR_INVALID_ARGUMENT;
+            }
+            else {
+                /* Retain the legacy static control endpoint. */
+            }
             (void)printf("registering with initiator %s:%" PRIu32 "...\n",
-                         pSession->BaseConfig.acPeerServerAddress,
-                         pSession->BaseConfig.uiPeerPort);
+                         PeerConfig.acPeerServerAddress,
+                         PeerConfig.uiPeerPort);
             eError = RegisterNativeAppPeer(
-                &pSession->BaseConfig, &pSession->PeerTable, &Peer,
+                &PeerConfig, &pSession->PeerTable, &Peer,
                 acError, sizeof(acError));
         }
         if (IPSEC_OK == eError) {
@@ -2256,7 +2379,7 @@ int32_t RunNativeAppCli(
         bool bHasManagementConfig =
             (NULL != Options.pcManagementConfigPath);
 
-        if ((bHasApplicationConfig != bHasManagementConfig) ||
+        if ((!bHasApplicationConfig && bHasManagementConfig) ||
             ((NULL != Options.pcConfigPath) && bHasApplicationConfig)) {
             PrintNativeAppUsage(ppcArguments[0]);
             return 2;
@@ -2285,10 +2408,11 @@ int32_t RunNativeAppCli(
                 Session.acApplicationConfigPath,
                 sizeof(Session.acApplicationConfigPath),
                 Options.pcApplicationConfigPath) &&
-            CopyNativeAppSessionText(
-                Session.acManagementConfigPath,
-                sizeof(Session.acManagementConfigPath),
-                Options.pcManagementConfigPath)) {
+            ((NULL == Options.pcManagementConfigPath) ||
+             CopyNativeAppSessionText(
+                 Session.acManagementConfigPath,
+                 sizeof(Session.acManagementConfigPath),
+                 Options.pcManagementConfigPath))) {
             Session.BaseConfig = Session.Config;
             Session.bConfigValid = false;
         }
@@ -2359,27 +2483,8 @@ int32_t RunNativeAppCli(
         DeinitializeNativeAppSession(&Session);
         return 1;
     }
-    else if ((NATIVE_APP_ROLE_INITIATOR == Session.BaseConfig.eRole) &&
-             ((NULL != Options.pcConfigPath) ||
-              (NULL != Options.pcApplicationConfigPath))) {
-        eError = StartNativeAppPeerListener(
-            &Session.PeerListener, &Session.BaseConfig, &Session.PeerTable,
-            HandleNativeAppPeerListenerEvent, &Session, acError,
-            sizeof(acError));
-        if (IPSEC_OK != eError) {
-            (void)fprintf(stderr, "peer listener startup failed: %s (%s)\n",
-                          acError, GetIpsecErrorString(eError));
-            DeinitializeNativeAppSession(&Session);
-            return 1;
-        }
-        else {
-            (void)printf("peer listener started: %s:%" PRIu32 "\n",
-                         Session.BaseConfig.acPeerServerAddress,
-                         Session.BaseConfig.uiPeerPort);
-        }
-    }
     else {
-        /* Responders register explicitly and unconfigured sessions stay idle. */
+        /* Peer control endpoints are started explicitly from the CLI. */
     }
 
     if (Options.iCommandIndex < iArgumentCount) {

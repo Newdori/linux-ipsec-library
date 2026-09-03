@@ -42,6 +42,11 @@ typedef enum NativeAppRole {
     NATIVE_APP_ROLE_RESPONDER
 } NativeAppRole_t;
 
+typedef enum NativeAppPlainNetfilterHook {
+    NATIVE_APP_PLAIN_NETFILTER_INPUT = 0,
+    NATIVE_APP_PLAIN_NETFILTER_FORWARD
+} NativeAppPlainNetfilterHook_t;
+
 typedef enum NativeAppPeerState {
     NATIVE_APP_PEER_STATE_REGISTERED = 0,
     NATIVE_APP_PEER_STATE_CREDENTIAL_LOADED,
@@ -63,6 +68,8 @@ typedef struct NativeAppConfig {
     IpsecDatapathConfig_t Datapath;
     char acLocalAddress[IPSEC_ADDRESS_LENGTH];
     char acRemoteAddress[IPSEC_ADDRESS_LENGTH];
+    char acLocalTrafficSelector[IPSEC_SELECTOR_LIST_LENGTH];
+    char acRemoteTrafficSelector[IPSEC_SELECTOR_LIST_LENGTH];
     char acLocalId[IPSEC_ID_LENGTH];
     char acRemoteId[IPSEC_ID_LENGTH];
     char acPskFile[NATIVE_APP_PATH_LENGTH];
@@ -75,6 +82,7 @@ typedef struct NativeAppConfig {
     char acIkeProposals[NATIVE_APP_PROPOSAL_TEXT_LENGTH];
     char acEspProposals[NATIVE_APP_PROPOSAL_TEXT_LENGTH];
     IpsecMode_t eMode;
+    NativeAppPlainNetfilterHook_t ePlainNetfilterHook;
     bool bChildlessIke;
     bool bTerminateOnExit;
     uint32_t uiTimeoutMs;

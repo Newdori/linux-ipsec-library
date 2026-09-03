@@ -167,6 +167,12 @@ static void VerifyMessages(void)
         pTc->tcm_info += 1U << 20U;
         CHECK(IPSEC_ERR_RESOURCE_CONFLICT == InspectIpsecProtectedApplicationFilterMessage(&State, pHeader, false, &uiMask));
         CHECK(IPSEC_OK == BuildIpsecProtectedApplicationFilterRequest(&State, bUdp, false, &Message));
+        pTc->tcm_handle = State.uiTunIndex + 1U;
+        CHECK(IPSEC_OK == InspectIpsecProtectedApplicationFilterMessage(
+            &State, pHeader, false, &uiMask));
+        CHECK(uiMaskBefore == uiMask);
+        CHECK(IPSEC_OK == BuildIpsecProtectedApplicationFilterRequest(
+            &State, bUdp, false, &Message));
         CHECK(IPSEC_OK == ValidateIpsecProtectedApplicationFilter(&State, pHeader, bUdp));
         CHECK(IPSEC_OK == InspectIpsecProtectedApplicationFilterMessage(&State, pHeader, false, &uiMask));
         CHECK(IPSEC_ERR_RESOURCE_CONFLICT == InspectIpsecProtectedApplicationFilterMessage(&State, pHeader, false, &uiMask));
@@ -190,6 +196,10 @@ static void VerifyMessages(void)
         CHECK(NLMSG_LENGTH(sizeof(struct tcmsg)) == pHeader->nlmsg_len);
     }
     CHECK(3U == uiMask);
+    State.uiFilterHandle = 0x49500001U;
+    CHECK(IPSEC_OK == BuildIpsecProtectedApplicationFilterRequest(
+        &State, false, false, &Message));
+    CHECK(0x49500001U == ((struct tcmsg *)NLMSG_DATA(pHeader))->tcm_handle);
     (void)puts("PASS: ESP redirect / UDP-ESP drop selectors, IKE exclusion, scoped filters and malformed Netlink");
 }
 

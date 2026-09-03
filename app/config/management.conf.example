@@ -1,4 +1,6 @@
+# Legacy optional override file. New deployments keep these settings in the
+# role-specific application configuration file.
 ike_proposals=aes256-sha256-prfsha256-modp2048
 esp_proposals=aes256-sha256
-ipsec_mode=transport
+ipsec_mode=tunnel
 # Use ipsec_mode=tunnel for the kernel-libipsec backend.

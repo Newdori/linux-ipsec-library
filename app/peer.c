@@ -7,12 +7,13 @@
 #include <limits.h>
 #include <poll.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-#define NATIVE_APP_PEER_PROTOCOL "RCST/1"
+#define NATIVE_APP_PEER_PROTOCOL "RCST/2"
 
 static void SetNativeAppPeerError(
     char *pcError,
@@ -87,24 +88,43 @@ static bool IsNativeAppPeerAddress(const char *pcAddress)
            (1 == inet_pton(AF_INET6, pcAddress, aucAddress));
 }
 
-static bool IsNativeAppSameAddress(
-    const char *pcLeft,
-    const char *pcRight)
+static bool IsNativeAppPeerTrafficSelector(const char *pcSelector)
 {
-    uint8_t aucLeft[sizeof(struct in6_addr)];
-    uint8_t aucRight[sizeof(struct in6_addr)];
+    uint8_t aucAddress[sizeof(struct in6_addr)];
+    char acAddress[IPSEC_ADDRESS_LENGTH];
+    const char *pcSlash;
+    char *pcEnd = NULL;
+    size_t zAddressLength;
+    uint64_t ullPrefix;
+    uint64_t ullMaximumPrefix;
 
-    if ((1 == inet_pton(AF_INET, pcLeft, aucLeft)) &&
-        (1 == inet_pton(AF_INET, pcRight, aucRight))) {
-        return (0 == memcmp(aucLeft, aucRight, sizeof(struct in_addr)));
+    if (!IsNativeAppPeerToken(pcSelector)) {
+        return false;
     }
-    else if ((1 == inet_pton(AF_INET6, pcLeft, aucLeft)) &&
-             (1 == inet_pton(AF_INET6, pcRight, aucRight))) {
-        return (0 == memcmp(aucLeft, aucRight, sizeof(struct in6_addr)));
+    pcSlash = strchr(pcSelector, '/');
+    if ((NULL == pcSlash) || (NULL != strchr(pcSlash + 1U, '/')) ||
+        (NULL != strchr(pcSelector, ','))) {
+        return false;
+    }
+    zAddressLength = (size_t)(pcSlash - pcSelector);
+    if ((0U == zAddressLength) || (zAddressLength >= sizeof(acAddress))) {
+        return false;
+    }
+    (void)memcpy(acAddress, pcSelector, zAddressLength);
+    acAddress[zAddressLength] = '\0';
+    if (1 == inet_pton(AF_INET, acAddress, aucAddress)) {
+        ullMaximumPrefix = 32U;
+    }
+    else if (1 == inet_pton(AF_INET6, acAddress, aucAddress)) {
+        ullMaximumPrefix = 128U;
     }
     else {
         return false;
     }
+    errno = 0;
+    ullPrefix = strtoull(pcSlash + 1U, &pcEnd, 10);
+    return (0 == errno) && (pcEnd != (pcSlash + 1U)) &&
+        ('\0' == *pcEnd) && (ullPrefix <= ullMaximumPrefix);
 }
 
 static bool BuildNativeAppSocketAddress(
@@ -135,35 +155,6 @@ static bool BuildNativeAppSocketAddress(
     else {
         return false;
     }
-}
-
-static bool GetNativeAppSocketAddressText(
-    const struct sockaddr_storage *pStorage,
-    char *pcAddress,
-    uint32_t uiAddressLength)
-{
-    const void *pvAddress;
-    int32_t iFamily;
-
-    if (AF_INET == pStorage->ss_family) {
-        const struct sockaddr_in *pIpv4 =
-            (const struct sockaddr_in *)pStorage;
-
-        pvAddress = &pIpv4->sin_addr;
-        iFamily = AF_INET;
-    }
-    else if (AF_INET6 == pStorage->ss_family) {
-        const struct sockaddr_in6 *pIpv6 =
-            (const struct sockaddr_in6 *)pStorage;
-
-        pvAddress = &pIpv6->sin6_addr;
-        iFamily = AF_INET6;
-    }
-    else {
-        return false;
-    }
-    return (NULL != inet_ntop(iFamily, pvAddress, pcAddress,
-                              (socklen_t)uiAddressLength));
 }
 
 static int32_t GetNativeAppPollTimeout(uint32_t uiTimeoutMs)
@@ -343,6 +334,8 @@ static IpsecError_t BuildNativeAppPeerConfig(
     uint32_t uiLogonId,
     const char *pcLocalAddress,
     const char *pcRemoteAddress,
+    const char *pcLocalTrafficSelector,
+    const char *pcRemoteTrafficSelector,
     const char *pcLocalId,
     const char *pcRemoteId)
 {
@@ -362,6 +355,14 @@ static IpsecError_t BuildNativeAppPeerConfig(
         !CopyNativeAppPeerText(pPeer->Config.acRemoteAddress,
                                sizeof(pPeer->Config.acRemoteAddress),
                                pcRemoteAddress) ||
+        !CopyNativeAppPeerText(
+            pPeer->Config.acLocalTrafficSelector,
+            sizeof(pPeer->Config.acLocalTrafficSelector),
+            pcLocalTrafficSelector) ||
+        !CopyNativeAppPeerText(
+            pPeer->Config.acRemoteTrafficSelector,
+            sizeof(pPeer->Config.acRemoteTrafficSelector),
+            pcRemoteTrafficSelector) ||
         !CopyNativeAppPeerText(pPeer->Config.acLocalId,
                                sizeof(pPeer->Config.acLocalId), pcLocalId) ||
         !CopyNativeAppPeerText(pPeer->Config.acRemoteId,
@@ -535,9 +536,17 @@ static int32_t OpenNativeAppServerSocket(
     int32_t iFamily;
     int32_t iSocket;
     int32_t iEnabled = 1;
+    const char *pcBindAddress = pConfig->acPeerServerAddress;
 
+    if ('\0' == pcBindAddress[0]) {
+        pcBindAddress = (NULL != strchr(pConfig->acLocalAddress, ':')) ?
+            "::" : "0.0.0.0";
+    }
+    else {
+        /* Bind to the explicit control-plane address. */
+    }
     if (!BuildNativeAppSocketAddress(
-            pConfig->acPeerServerAddress, pConfig->uiPeerPort, &Address,
+            pcBindAddress, pConfig->uiPeerPort, &Address,
             &uiAddressLength, &iFamily)) {
         return -1;
     }
@@ -567,25 +576,18 @@ static int32_t OpenNativeAppClientSocket(
     char *pcError,
     uint32_t uiErrorLength)
 {
-    struct sockaddr_storage LocalAddress;
     struct sockaddr_storage ServerAddress;
-    socklen_t uiLocalLength;
     socklen_t uiServerLength;
-    int32_t iLocalFamily;
     int32_t iServerFamily;
     int32_t iSocket;
     int32_t iFlags;
     int32_t iResult;
 
-    if (!BuildNativeAppSocketAddress(pConfig->acLocalAddress, 0U,
-                                     &LocalAddress, &uiLocalLength,
-                                     &iLocalFamily) ||
-        !BuildNativeAppSocketAddress(
+    if (!BuildNativeAppSocketAddress(
             pConfig->acPeerServerAddress, pConfig->uiPeerPort,
-            &ServerAddress, &uiServerLength, &iServerFamily) ||
-        (iLocalFamily != iServerFamily)) {
+            &ServerAddress, &uiServerLength, &iServerFamily)) {
         SetNativeAppPeerError(pcError, uiErrorLength,
-                              "peer addresses use incompatible families");
+                              "invalid peer server address");
         return -1;
     }
     iSocket = (int32_t)socket(iServerFamily,
@@ -595,15 +597,8 @@ static int32_t OpenNativeAppClientSocket(
                               "failed to create peer client socket");
         return -1;
     }
-    else if (0 != bind(iSocket, (const struct sockaddr *)&LocalAddress,
-                       uiLocalLength)) {
-        SetNativeAppPeerError(pcError, uiErrorLength,
-                              "failed to bind peer client address");
-        (void)close(iSocket);
-        return -1;
-    }
     else {
-        /* Connect from the configured IPsec endpoint address. */
+        /* Let the OS select the TCP control-plane source address. */
     }
     iFlags = fcntl(iSocket, F_GETFL, 0);
     if ((0 > iFlags) || (0 != fcntl(iSocket, F_SETFL, iFlags | O_NONBLOCK))) {
@@ -752,11 +747,11 @@ static IpsecError_t AcceptNativeAppPeerConnection(
     socklen_t uiRemoteLength = (socklen_t)sizeof(RemoteSocketAddress);
     NativeAppPeer_t Peer;
     char acMessage[NATIVE_APP_PEER_MESSAGE_LENGTH];
-    char acRemoteSocketAddress[IPSEC_ADDRESS_LENGTH];
     char *pcSave = NULL;
     char *pcProtocol;
     char *pcCommand;
     char *pcRemoteAddress;
+    char *pcRemoteTrafficSelector;
     char *pcExtra;
     uint32_t uiGroupId = 0U;
     uint32_t uiLogonId = 0U;
@@ -801,22 +796,17 @@ static IpsecError_t AcceptNativeAppPeerConnection(
         pcProtocol = strtok_r(acMessage, " ", &pcSave);
         pcCommand = strtok_r(NULL, " ", &pcSave);
         pcRemoteAddress = strtok_r(NULL, " ", &pcSave);
+        pcRemoteTrafficSelector = strtok_r(NULL, " ", &pcSave);
         pcExtra = strtok_r(NULL, " ", &pcSave);
         if ((NULL == pcProtocol) || (NULL == pcCommand) ||
-            (NULL == pcRemoteAddress) || (NULL != pcExtra) ||
+            (NULL == pcRemoteAddress) ||
+            (NULL == pcRemoteTrafficSelector) || (NULL != pcExtra) ||
             (0 != strcmp(NATIVE_APP_PEER_PROTOCOL, pcProtocol)) ||
             (0 != strcmp("REGISTER", pcCommand)) ||
             !IsNativeAppPeerAddress(pcRemoteAddress) ||
-            !GetNativeAppSocketAddressText(
-                &RemoteSocketAddress, acRemoteSocketAddress,
-                sizeof(acRemoteSocketAddress)) ||
-            !IsNativeAppSameAddress(pcRemoteAddress,
-                                    acRemoteSocketAddress) ||
-            ((IPSEC_PACKET_PATH_APPLICATION == pBaseConfig->Datapath.eProtectedPacketPath) &&
-             !IsNativeAppSameAddress(pcRemoteAddress,
-                 pBaseConfig->Datapath.acProtectedRemoteAddress))) {
+            !IsNativeAppPeerTrafficSelector(pcRemoteTrafficSelector)) {
             SetNativeAppPeerError(pcError, uiErrorLength,
-                                  "invalid peer registration request or peer outside protected pair");
+                                  "invalid peer registration request");
             eError = IPSEC_ERR_INVALID_ARGUMENT;
         }
         else {
@@ -833,7 +823,7 @@ static IpsecError_t AcceptNativeAppPeerConnection(
             }
         }
     }
-    if ((IPSEC_OK == eError) && !bExistingPeer) {
+    if (IPSEC_OK == eError) {
         char acPeerId[IPSEC_ID_LENGTH];
 
         if (!BuildNativeAppPeerId(acPeerId, sizeof(acPeerId), uiGroupId,
@@ -844,6 +834,8 @@ static IpsecError_t AcceptNativeAppPeerConnection(
             eError = BuildNativeAppPeerConfig(
                 pBaseConfig, &Peer, uiGroupId, uiLogonId,
                 pBaseConfig->acLocalAddress, pcRemoteAddress,
+                pBaseConfig->acLocalTrafficSelector,
+                pcRemoteTrafficSelector,
                 pBaseConfig->acLocalId, acPeerId);
         }
     }
@@ -856,9 +848,11 @@ static IpsecError_t AcceptNativeAppPeerConnection(
         iLength = snprintf(
             acMessage, sizeof(acMessage),
             NATIVE_APP_PEER_PROTOCOL " ASSIGN %" PRIu32 " %" PRIu32
-            " %s %s %s %s %s\n",
+            " %s %s %s %s %s %s\n",
             uiGroupId, uiLogonId, pAssignedConfig->acLocalAddress,
-            pAssignedConfig->acLocalId, pAssignedConfig->acIkeProposals,
+            pAssignedConfig->acLocalTrafficSelector,
+            pAssignedConfig->acLocalId,
+            pAssignedConfig->acIkeProposals,
             pAssignedConfig->acEspProposals, pcMode);
         if ((0 > iLength) || ((uint32_t)iLength >= sizeof(acMessage))) {
             eError = IPSEC_ERR_BUFFER_TOO_SMALL;
@@ -1040,7 +1034,7 @@ IpsecError_t RegisterNativeAppPeer(
 {
     NativeAppPeer_t Peer;
     char acMessage[NATIVE_APP_PEER_MESSAGE_LENGTH];
-    char *pacTokens[10] = {0};
+    char *pacTokens[11] = {0};
     char *pcSave = NULL;
     uint32_t uiTokenCount = 0U;
     uint32_t uiGroupId = 0U;
@@ -1063,8 +1057,9 @@ IpsecError_t RegisterNativeAppPeer(
         return IPSEC_ERR_INTERNAL;
     }
     iLength = snprintf(acMessage, sizeof(acMessage),
-                       NATIVE_APP_PEER_PROTOCOL " REGISTER %s\n",
-                       pBaseConfig->acLocalAddress);
+                       NATIVE_APP_PEER_PROTOCOL " REGISTER %s %s\n",
+                       pBaseConfig->acLocalAddress,
+                       pBaseConfig->acLocalTrafficSelector);
     if ((0 > iLength) || ((uint32_t)iLength >= sizeof(acMessage))) {
         eError = IPSEC_ERR_BUFFER_TOO_SMALL;
     }
@@ -1087,7 +1082,7 @@ IpsecError_t RegisterNativeAppPeer(
             uiTokenCount++;
             pcToken = strtok_r(NULL, " ", &pcSave);
         }
-        if ((9U != uiTokenCount) || (NULL != pcToken) ||
+        if ((10U != uiTokenCount) || (NULL != pcToken) ||
             (0 != strcmp(NATIVE_APP_PEER_PROTOCOL, pacTokens[0])) ||
             (0 != strcmp("ASSIGN", pacTokens[1])) ||
             !ParseNativeAppNumber(pacTokens[2], &uiGroupId) ||
@@ -1095,17 +1090,18 @@ IpsecError_t RegisterNativeAppPeer(
             (0U == uiGroupId) || (0U == uiLogonId) ||
             (NATIVE_APP_PEER_LOGON_LIMIT < uiLogonId) ||
             !IsNativeAppPeerAddress(pacTokens[4]) ||
-            !IsNativeAppPeerToken(pacTokens[5]) ||
+            !IsNativeAppPeerTrafficSelector(pacTokens[5]) ||
             !IsNativeAppPeerToken(pacTokens[6]) ||
-            !IsNativeAppPeerToken(pacTokens[7])) {
+            !IsNativeAppPeerToken(pacTokens[7]) ||
+            !IsNativeAppPeerToken(pacTokens[8])) {
             SetNativeAppPeerError(pcError, uiErrorLength,
                                   "invalid peer assignment response");
             eError = IPSEC_ERR_INVALID_ARGUMENT;
         }
-        else if (0 == strcmp("transport", pacTokens[8])) {
+        else if (0 == strcmp("transport", pacTokens[9])) {
             eMode = IPSEC_MODE_TRANSPORT;
         }
-        else if (0 == strcmp("tunnel", pacTokens[8])) {
+        else if (0 == strcmp("tunnel", pacTokens[9])) {
             eMode = IPSEC_MODE_TUNNEL;
         }
         else {
@@ -1119,19 +1115,12 @@ IpsecError_t RegisterNativeAppPeer(
         NativeAppConfig_t EffectiveConfig = *pBaseConfig;
 
         EffectiveConfig.eMode = eMode;
-        if ((IPSEC_PACKET_PATH_APPLICATION == pBaseConfig->Datapath.eProtectedPacketPath) &&
-            !IsNativeAppSameAddress(pacTokens[4],
-                pBaseConfig->Datapath.acProtectedRemoteAddress)) {
-            SetNativeAppPeerError(pcError, uiErrorLength,
-                                  "assigned peer is outside the configured protected pair");
-            eError = IPSEC_ERR_INVALID_ARGUMENT;
-        }
-        else if (!CopyNativeAppPeerText(
+        if (!CopyNativeAppPeerText(
                 EffectiveConfig.acIkeProposals,
-                sizeof(EffectiveConfig.acIkeProposals), pacTokens[6]) ||
+                sizeof(EffectiveConfig.acIkeProposals), pacTokens[7]) ||
             !CopyNativeAppPeerText(
                 EffectiveConfig.acEspProposals,
-                sizeof(EffectiveConfig.acEspProposals), pacTokens[7]) ||
+                sizeof(EffectiveConfig.acEspProposals), pacTokens[8]) ||
             !BuildNativeAppPeerId(acPeerId, sizeof(acPeerId), uiGroupId,
                                   uiLogonId)) {
             eError = IPSEC_ERR_BUFFER_TOO_SMALL;
@@ -1139,8 +1128,9 @@ IpsecError_t RegisterNativeAppPeer(
         else {
             eError = BuildNativeAppPeerConfig(
                 &EffectiveConfig, &Peer, uiGroupId, uiLogonId,
-                pBaseConfig->acLocalAddress, pacTokens[4], acPeerId,
-                pacTokens[5]);
+                pBaseConfig->acLocalAddress, pacTokens[4],
+                pBaseConfig->acLocalTrafficSelector, pacTokens[5],
+                acPeerId, pacTokens[6]);
         }
     }
     if (IPSEC_OK == eError) {

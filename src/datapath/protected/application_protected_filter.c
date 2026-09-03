@@ -107,6 +107,13 @@ static uint32_t GetProtectedApplicationFilterInfo(const IpsecProtectedApplicatio
     return ((uint32_t)(pState->usPriority + (bUdpDrop ? 1U : 0U)) << 16U) | usProtocol;
 }
 
+static uint32_t GetProtectedApplicationFilterHandle(
+    const IpsecProtectedApplicationState_t *pState)
+{
+    return (0U != pState->uiFilterHandle) ? pState->uiFilterHandle :
+        pState->uiTunIndex;
+}
+
 IpsecError_t BuildIpsecProtectedApplicationFilterRequest(const IpsecProtectedApplicationState_t *pState,
     bool bUdpDrop, bool bRemove, IpsecProtectedApplicationMessage_t *pMessage)
 {
@@ -133,7 +140,7 @@ IpsecError_t BuildIpsecProtectedApplicationFilterRequest(const IpsecProtectedApp
     pTc = (struct tcmsg *)NLMSG_DATA(pHeader);
     pTc->tcm_ifindex = (int32_t)pState->uiEgressIndex;
     pTc->tcm_parent = TC_H_MAKE(TC_H_CLSACT, TC_H_MIN_EGRESS);
-    pTc->tcm_handle = pState->uiTunIndex;
+    pTc->tcm_handle = GetProtectedApplicationFilterHandle(pState);
     pTc->tcm_info = GetProtectedApplicationFilterInfo(pState, bUdpDrop);
     if (bRemove) {
         return IPSEC_OK;
@@ -230,14 +237,11 @@ IpsecError_t InspectIpsecProtectedApplicationFilterMessage(const IpsecProtectedA
     memcpy(&Tc, NLMSG_DATA(pHeader), sizeof(Tc));
     if ((Tc.tcm_ifindex != (int32_t)pState->uiEgressIndex) ||
         (TC_H_MAKE(TC_H_CLSACT, TC_H_MIN_EGRESS) != Tc.tcm_parent)) {
-        return IPSEC_ERR_RESOURCE_CONFLICT;
+        return IPSEC_OK;
     }
-    if (bRequireEmpty) {
-        return IPSEC_ERR_RESOURCE_CONFLICT;
-    }
-    bUdp = (Tc.tcm_info >> 16U) == (uint32_t)pState->usPriority + 1U;
-    if (Tc.tcm_info != GetProtectedApplicationFilterInfo(pState, bUdp)) {
-        return IPSEC_ERR_RESOURCE_CONFLICT;
+    if ((0U != Tc.tcm_handle) &&
+        (Tc.tcm_handle != GetProtectedApplicationFilterHandle(pState))) {
+        return IPSEC_OK;
     }
     pucAttributes = (const uint8_t *)NLMSG_DATA(pHeader) + NLMSG_ALIGN(sizeof(Tc));
     zAttributes = pHeader->nlmsg_len - NLMSG_LENGTH(sizeof(Tc));
@@ -265,6 +269,13 @@ IpsecError_t InspectIpsecProtectedApplicationFilterMessage(const IpsecProtectedA
         eError = FindIpsecProtectedApplicationAttribute(pucAttributes, zAttributes, TCA_OPTIONS, &pucValue, &zValue);
         return ((IPSEC_OK == eError) && (NULL == pucValue)) ?
             IPSEC_OK : IPSEC_ERR_RESOURCE_CONFLICT;
+    }
+    if (bRequireEmpty) {
+        return IPSEC_ERR_RESOURCE_CONFLICT;
+    }
+    bUdp = (Tc.tcm_info >> 16U) == (uint32_t)pState->usPriority + 1U;
+    if (Tc.tcm_info != GetProtectedApplicationFilterInfo(pState, bUdp)) {
+        return IPSEC_ERR_RESOURCE_CONFLICT;
     }
     uiBit = bUdp ? 2U : 1U;
     if (0U != (*puiFilterMask & uiBit)) {
@@ -334,7 +345,7 @@ IpsecError_t ValidateIpsecProtectedApplicationFilter(const IpsecProtectedApplica
     }
     memcpy(&Tc, NLMSG_DATA(pHeader), sizeof(Tc));
     if (((uint32_t)Tc.tcm_ifindex != pState->uiEgressIndex) ||
-        (Tc.tcm_handle != pState->uiTunIndex) ||
+        (Tc.tcm_handle != GetProtectedApplicationFilterHandle(pState)) ||
         (TC_H_MAKE(TC_H_CLSACT, TC_H_MIN_EGRESS) != Tc.tcm_parent) ||
         (Tc.tcm_info != GetProtectedApplicationFilterInfo(pState, bUdpDrop))) {
         return IPSEC_ERR_RESOURCE_CONFLICT;

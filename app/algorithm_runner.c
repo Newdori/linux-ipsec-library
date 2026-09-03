@@ -15,7 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define NATIVE_APP_ALGORITHM_PROTOCOL       "IPSEC-ALGORITHM-1"
+#define NATIVE_APP_ALGORITHM_PROTOCOL       "IPSEC-ALGORITHM-2"
 #define NATIVE_APP_ALGORITHM_MESSAGE_LENGTH 1024U
 #define NATIVE_APP_ALGORITHM_POLL_MS         500U
 #define NATIVE_APP_ALGORITHM_CLEANUP_ATTEMPTS 3U
@@ -2475,6 +2475,28 @@ static IpsecError_t ReplyNativeAppAlgorithmServer(
     return eError;
 }
 
+static IpsecError_t ReplyNativeAppAlgorithmVerification(
+    int32_t iSocket,
+    const NativeAppAlgorithmEndpoint_t *pSender,
+    const char *pcAction,
+    const NativeAppAlgorithmCase_t *pCase,
+    NativeAppAlgorithmResult_t eResult,
+    IpsecError_t eVerifyError)
+{
+    char acVerifyError[16];
+    int32_t iLength = snprintf(acVerifyError, sizeof(acVerifyError),
+                               "%" PRIu32, (uint32_t)eVerifyError);
+
+    if ((0 > iLength) || ((size_t)iLength >= sizeof(acVerifyError))) {
+        return IPSEC_ERR_BUFFER_TOO_SMALL;
+    }
+    else {
+        return ReplyNativeAppAlgorithmServer(
+            iSocket, pSender, pcAction, pCase,
+            GetNativeAppAlgorithmResultName(eResult), acVerifyError);
+    }
+}
+
 static IpsecError_t RunNativeAppAlgorithmServerCase(
     IpsecContext_t *pContext,
     int32_t iSocket,
@@ -2590,9 +2612,8 @@ static IpsecError_t RunNativeAppAlgorithmServerCase(
         else if (0 == strcmp("VERIFY", pacFields[1])) {
             IpsecError_t eVerify = QueryNativeAppAlgorithmState(
                 pContext, &Config, pCase, &Result);
-            char acVerifyError[16];
+            IpsecError_t eAck;
             IpsecError_t eReply;
-            int32_t iLength;
 
             if (IPSEC_OK == eVerify) {
                 eVerify = WaitNativeAppAlgorithmTraffic(
@@ -2608,19 +2629,14 @@ static IpsecError_t RunNativeAppAlgorithmServerCase(
             else {
                 /* QueryNativeAppAlgorithmState set the failure stage. */
             }
-            iLength = snprintf(acVerifyError, sizeof(acVerifyError),
-                               "%" PRIu32, (uint32_t)eVerify);
-            if ((0 > iLength) ||
-                ((size_t)iLength >= sizeof(acVerifyError))) {
-                eReply = IPSEC_ERR_BUFFER_TOO_SMALL;
-            }
-            else {
-                eReply = ReplyNativeAppAlgorithmServer(
-                    iSocket, &ActualSender, "RESULT", pCase,
-                    GetNativeAppAlgorithmResultName(Result.eResult),
-                    acVerifyError);
-            }
-            if ((IPSEC_OK == eVerify) && (IPSEC_OK == eReply)) {
+            eAck = ReplyNativeAppAlgorithmVerification(
+                iSocket, &ActualSender, "VERIFY_ACK", pCase,
+                Result.eResult, eVerify);
+            /* VERIFY_ACK provides responder outbound ESP traffic. The client
+             * ignores it as an intermediate action and keeps the SA installed
+             * until the final RESULT below.
+             */
+            if ((IPSEC_OK == eVerify) && (IPSEC_OK == eAck)) {
                 eVerify = WaitNativeAppAlgorithmTraffic(
                     pContext, &Config, 0U, 0U, true, true, &Result);
                 if (IPSEC_OK != eVerify) {
@@ -2633,6 +2649,14 @@ static IpsecError_t RunNativeAppAlgorithmServerCase(
             }
             else {
                 /* Preserve the negotiation, traffic, or reply error. */
+            }
+            if (IPSEC_OK == eAck) {
+                eReply = ReplyNativeAppAlgorithmVerification(
+                    iSocket, &ActualSender, "RESULT", pCase,
+                    Result.eResult, eVerify);
+            }
+            else {
+                eReply = eAck;
             }
             (void)CaptureNativeAppAlgorithmCaseReport(
                 pContext, &Config, &Result, pcCaseDirectory);
