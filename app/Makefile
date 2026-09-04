@@ -46,12 +46,16 @@ SOURCES = \
 	algorithm_catalog.c \
 	algorithm_report.c \
 	algorithm_runner.c \
+	algorithm_packet.c \
+	algorithm_packet_codec.c \
+	algorithm_packet_evidence.c \
 	cli.c \
 	command.c \
 	config.c \
 	datapath.c \
 	packet.c \
 	lifecycle.c \
+	shutdown.c \
 	peer.c \
 	state.c \
 	show.c \

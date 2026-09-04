@@ -177,6 +177,11 @@ IpsecError_t TransferNativeAppPacketFile(IpsecContext_t *pContext,
             .eType = IPSEC_PROTECTED_PACKET_RAW_ESP,
             .eDirection = IPSEC_PACKET_DIRECTION_INBOUND};
         eError = ReadNativeAppPacket(iFd, aucData, sizeof(aucData), &zLength);
+        if (IPSEC_ERR_FILE_READ == eError) {
+            (void)fprintf(stderr, "packet file is empty, oversized, unreadable, or incomplete: %s; "
+                "submit requires a successful protected-receive file from the peer\n",
+                pOptions->pcPath);
+        }
         Packet.zLength = zLength;
         if ((IPSEC_OK == eError) && IsNativeAppStopRequested()) {
             eError = IPSEC_ERR_CANCELLED;

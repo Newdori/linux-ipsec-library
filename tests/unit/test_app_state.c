@@ -1,7 +1,12 @@
 #include "app_internal.h"
 
+#include <arpa/inet.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
 
 static bool SetTestText(
     char *pcDestination,
@@ -43,6 +48,7 @@ static bool VerifyStateResolution(void)
         !SetTestText(Ike.acName, sizeof(Ike.acName), "conn-rcst-1-1") ||
         !SetTestText(Child.acName, sizeof(Child.acName),
                      "child-rcst-1-1") ||
+        !SetTestText(Child.acIkeName, sizeof(Child.acIkeName), "conn-rcst-1-1") ||
         !SetTestText(Child.acState, sizeof(Child.acState), "INSTALLED")) {
         return false;
     }
@@ -280,6 +286,56 @@ static bool VerifyPeerTrafficSelectorConflicts(void)
     return bValid;
 }
 
+static bool VerifyPeerListenerStop(void)
+{
+    NativeAppPeerListener_t Listener = {0};
+    NativeAppPeerTable_t Table;
+    NativeAppConfig_t Config = {.eRole = NATIVE_APP_ROLE_INITIATOR,
+        .uiTimeoutMs = 60000U, .uiPeerPort = 0U};
+    struct sockaddr_in Address;
+    socklen_t uiAddressLength = sizeof(Address);
+    struct timespec Start, End;
+    char acError[NATIVE_APP_ERROR_TEXT_LENGTH] = {0};
+    int32_t iClient = -1;
+    bool bValid = false;
+    IpsecError_t eError = InitializeNativeAppPeerTable(&Table);
+    if (IPSEC_OK != eError) {
+        return false;
+    }
+    (void)SetTestText(Config.acPeerServerAddress, sizeof(Config.acPeerServerAddress), "127.0.0.1");
+    (void)SetTestText(Config.acLocalId, sizeof(Config.acLocalId), "test-local");
+    (void)SetTestText(Config.acIkeProposals, sizeof(Config.acIkeProposals), "aes256-sha256-modp2048");
+    (void)SetTestText(Config.acEspProposals, sizeof(Config.acEspProposals), "aes256-sha256");
+    eError = StartNativeAppPeerListener(&Listener, &Config, &Table, NULL, NULL,
+        acError, sizeof(acError));
+    if (IPSEC_OK == eError) {
+        iClient = socket(AF_INET, SOCK_STREAM, 0);
+        if ((0 <= iClient) &&
+            (0 == getsockname(Listener.iServerSocket, (struct sockaddr *)&Address, &uiAddressLength)) &&
+            (0 == connect(iClient, (const struct sockaddr *)&Address, sizeof(Address))) &&
+            (7 == send(iClient, "RCST/2 ", 7U, MSG_NOSIGNAL))) {
+            /* Leave the accepted registration incomplete. Shutdown must not wait
+             * for its 60-second read deadline, or require the client to close. */
+            (void)poll(NULL, 0U, 100);
+            if (0 == clock_gettime(CLOCK_MONOTONIC, &Start)) {
+                StopNativeAppPeerListener(&Listener);
+                if (0 == clock_gettime(CLOCK_MONOTONIC, &End)) {
+                    int64_t llElapsed = (int64_t)(End.tv_sec - Start.tv_sec) * 1000000000LL +
+                        (int64_t)End.tv_nsec - (int64_t)Start.tv_nsec;
+                    bValid = (0 <= llElapsed) && (llElapsed < 2000000000LL) &&
+                        !Listener.bRunning && (-1 == Listener.iServerSocket);
+                }
+            }
+        }
+    }
+    if (0 <= iClient) {
+        (void)close(iClient);
+    }
+    StopNativeAppPeerListener(&Listener);
+    DeinitializeNativeAppPeerTable(&Table);
+    return bValid;
+}
+
 int main(void)
 {
     if (!VerifyStateResolution()) {
@@ -296,6 +352,10 @@ int main(void)
     }
     else if (!VerifyPeerTrafficSelectorConflicts()) {
         (void)fprintf(stderr, "peer traffic selector conflict handling failed\n");
+        return 1;
+    }
+    else if (!VerifyPeerListenerStop()) {
+        (void)fprintf(stderr, "partial peer registration blocked listener shutdown\n");
         return 1;
     }
     else if (IPSEC_ERR_INVALID_ARGUMENT != RemoveIpsecPsk(NULL, "psk")) {

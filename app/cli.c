@@ -2,8 +2,10 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef struct NativeAppStartupOptions {
     const char *pcConfigPath;
@@ -23,6 +25,7 @@ typedef struct NativeAppSession {
     NativeAppRuntimeConfig_t Runtime;
     NativeAppPeerTable_t PeerTable;
     NativeAppPeerListener_t PeerListener;
+    NativeAppOwnedResources_t OwnedResources;
     pthread_mutex_t OutputMutex;
     char acConfigPath[NATIVE_APP_PATH_LENGTH];
     char acApplicationConfigPath[NATIVE_APP_PATH_LENGTH];
@@ -35,6 +38,8 @@ typedef struct NativeAppSession {
     bool bChildInstalled;
     bool bVerbose;
     bool bOutputMutexInitialized;
+    bool bExitCleaned;
+    bool bExitForced;
     atomic_bool bPromptVisible;
 } NativeAppSession_t;
 
@@ -203,6 +208,7 @@ static void PrintNativeAppHelp(void)
         "  test algorithm count MODE   show algorithm testcase count\n"
         "  test algorithm check MODE   validate the generated catalog\n"
         "  test algorithm serve [--port N]\n"
+        "    APPLICATION/APPLICATION: TCP relay with inner IPv4 /32 payload verification\n"
         "                               serve Native peer test requests\n"
         "  test algorithm run MODE [--start N] [--limit N|--all] [--port N]\n"
         "      [--results FILE] [--delay-ms N] [--stop-on-error]\n"
@@ -214,8 +220,8 @@ static void PrintNativeAppHelp(void)
         "  packet protected-submit FILE submit one inbound IPv4 RAW ESP packet\n"
         "  packet plain-receive FILE [--timeout-ms N]\n"
         "                               save one decrypted inner IPv4 packet\n"
-        "  exit                         close (APPLICATION requires no remaining SAs)\n"
-        "  exit --force                 acknowledge packet-path teardown risk\n"
+        "  exit | quit                  clean this session's resources and close\n"
+        "  exit --force                 skip cleanup; accept packet-path teardown risk\n"
         "\n"
         "Show scopes:\n"
         "  summary, all, config, credential, daemon, datapath, connections, ike,\n"
@@ -350,6 +356,7 @@ static IpsecError_t RebuildNativeAppRuntime(NativeAppSession_t *pSession)
     char acError[NATIVE_APP_ERROR_TEXT_LENGTH] = {0};
     IpsecError_t eError;
 
+    pSession->Config.pOwnedResources = &pSession->OwnedResources;
     if (!AreNativeAppContextSettingsEqual(&pSession->Config, &pSession->ContextConfig)) {
         (void)fprintf(stderr, "context settings differ; restart with the intended application config\n");
         pSession->bConfigValid = false;
@@ -378,6 +385,7 @@ static IpsecError_t RebuildNativeAppRuntime(NativeAppSession_t *pSession)
 
 static IpsecError_t RequireNativeAppConfig(NativeAppSession_t *pSession)
 {
+    pSession->Config.pOwnedResources = &pSession->OwnedResources;
     if (pSession->bConfigValid) {
         return IPSEC_OK;
     }
@@ -453,8 +461,10 @@ static void ShowNativeAppCredential(const NativeAppSession_t *pSession)
 {
     (void)printf("[CREDENTIAL]\n"
                  "  Session Loaded   : %s\n"
+                 "  Daemon ID        : %s\n"
                  "  Secret Displayed : no\n",
-                 pSession->bCredentialLoaded ? "yes" : "no");
+                 HasNativeAppCredential(&pSession->Config) ? "yes" : "no",
+                 GetNativeAppDaemonCredentialId(&pSession->Config));
 }
 
 static const char *GetNativeAppPeerId(const NativeAppPeer_t *pPeer)
@@ -1009,6 +1019,7 @@ static IpsecError_t LoadNativeAppSessionConfig(
         eError = IPSEC_ERR_BUFFER_TOO_SMALL;
     }
     else if (IPSEC_OK == eError) {
+        Config.pOwnedResources = &pSession->OwnedResources;
         pSession->Config = Config;
         pSession->BaseConfig = Config;
         pSession->acApplicationConfigPath[0] = '\0';
@@ -1150,7 +1161,7 @@ static IpsecError_t ExecuteNativeAppConnectionCommand(
         (0 == strcmp("load", ppcArguments[1]))) {
         eError = RequireNativeAppConfig(pSession);
         if (IPSEC_OK == eError) {
-            eError = AddIpsecConnection(pSession->pContext,
+            eError = AddNativeAppConnection(pSession->pContext, &pSession->Config,
                                         &pSession->Runtime.Connection);
         }
         if (IPSEC_OK == eError) {
@@ -1283,8 +1294,7 @@ static IpsecError_t ExecuteNativeAppCredentialCommand(
             return IPSEC_OK;
         }
         else if (IPSEC_OK == eError) {
-            eError = RemoveIpsecPsk(pSession->pContext,
-                                    pSession->Config.acCredentialId);
+            eError = RemoveNativeAppCredential(pSession->pContext, &pSession->Config);
         }
         else {
             /* Preserve the state validation error. */
@@ -1321,6 +1331,9 @@ static IpsecError_t ExecuteNativeAppCredentialCommand(
             uint32_t uiIndex;
 
             pSession->bCredentialLoaded = false;
+            for (uiIndex = 0U; uiIndex < pSession->OwnedResources.uiCount; uiIndex++) {
+                pSession->OwnedResources.aItems[uiIndex].bCredentialOwned = false;
+            }
             LockNativeAppPeerTable(&pSession->PeerTable);
             for (uiIndex = 0U;
                  uiIndex < pSession->PeerTable.uiCount;
@@ -1379,6 +1392,10 @@ static IpsecError_t ExecuteNativeAppIkeCommand(
         return eError;
     }
     else if (0 == strcmp("initiate", ppcArguments[1])) {
+        if (!HasNativeAppOwnedSaTarget(&pSession->OwnedResources, pcName, false)) {
+            (void)fprintf(stderr, "load the connection in this session before initiating IKE\n");
+            return IPSEC_ERR_RESOURCE_CONFLICT;
+        }
         eError = InitiateIpsecIke(pSession->pContext, pcName, &Control);
         if (IPSEC_OK == eError) {
             eError = WaitIpsecIkeEstablished(pSession->pContext, pcName,
@@ -1437,6 +1454,10 @@ static IpsecError_t ExecuteNativeAppChildCommand(
         return eError;
     }
     else if (0 == strcmp("initiate", ppcArguments[1])) {
+        if (!HasNativeAppOwnedSaTarget(&pSession->OwnedResources, pcName, true)) {
+            (void)fprintf(stderr, "load the parent connection in this session before initiating CHILD\n");
+            return IPSEC_ERR_RESOURCE_CONFLICT;
+        }
         eError = InitiateIpsecChild(pSession->pContext, pcName, &Control);
         if (IPSEC_OK == eError) {
             eError = WaitIpsecChildInstalled(pSession->pContext, pcName,
@@ -1491,8 +1512,9 @@ static IpsecError_t ExecuteNativeAppUp(NativeAppSession_t *pSession)
     else {
         /* Preserve the daemon state query error. */
     }
-    if ((IPSEC_OK == eError) && !pSession->bConnectionLoaded) {
-        eError = AddIpsecConnection(pSession->pContext,
+    if ((IPSEC_OK == eError) && (!pSession->bConnectionLoaded ||
+        !HasNativeAppOwnedSaTarget(&pSession->OwnedResources, pSession->Config.acConnectionName, false))) {
+        eError = AddNativeAppConnection(pSession->pContext, &pSession->Config,
                                     &pSession->Runtime.Connection);
         if (IPSEC_OK == eError) {
             pSession->bConnectionLoaded = true;
@@ -1520,8 +1542,8 @@ static IpsecError_t ExecuteNativeAppUp(NativeAppSession_t *pSession)
             pSession->pContext, &pSession->Config, &FailureStatus);
 
         if ((IPSEC_OK == eStatusError) &&
-            !FailureStatus.bIkeEstablished &&
-            !FailureStatus.bChildInstalled) {
+            !FailureStatus.bIkePresent &&
+            !FailureStatus.bChildPresent) {
             if (IPSEC_OK == RemoveIpsecConnection(
                     pSession->pContext,
                     pSession->Config.acConnectionName)) {
@@ -1551,7 +1573,6 @@ static IpsecError_t ExecuteNativeAppUp(NativeAppSession_t *pSession)
 
 static IpsecError_t ExecuteNativeAppDown(NativeAppSession_t *pSession)
 {
-    IpsecControlOptions_t Control = GetNativeAppControlOptions(pSession);
     NativeAppTargetStatus_t Status = {0};
     IpsecError_t eFirstError;
     IpsecError_t eError;
@@ -1566,22 +1587,7 @@ static IpsecError_t ExecuteNativeAppDown(NativeAppSession_t *pSession)
     }
     if (IPSEC_OK == eFirstError) {
         UpdateNativeAppSessionState(pSession, &Status);
-        if (Status.bIkeEstablished || Status.bChildInstalled) {
-            eFirstError = TerminateIpsecIke(
-                pSession->pContext, pSession->Config.acConnectionName,
-                &Control);
-            if (IPSEC_OK == eFirstError) {
-                eFirstError = WaitNativeAppRemoved(
-                    pSession->pContext, &pSession->Config,
-                    Status.uiReqid);
-            }
-            else {
-                /* Preserve resources until SA termination succeeds. */
-            }
-        }
-        else {
-            /* No selected SA needs termination. */
-        }
+        eFirstError = TerminateNativeAppTargetSas(pSession->pContext, &pSession->Config);
     }
     else {
         /* Preserve the daemon state query error. */
@@ -1880,15 +1886,13 @@ static IpsecError_t ExecuteNativeAppAlgorithmCommand(
     NativeAppAlgorithmMode_t eMode;
     IpsecError_t eError;
 
-    if (((IPSEC_PACKET_PATH_APPLICATION ==
-            pSession->ContextConfig.Datapath.eProtectedPacketPath) ||
-         (IPSEC_PACKET_PATH_APPLICATION ==
-            pSession->ContextConfig.Datapath.ePlainPacketPath)) &&
+    if ((pSession->ContextConfig.Datapath.eProtectedPacketPath !=
+         pSession->ContextConfig.Datapath.ePlainPacketPath) &&
         (uiArgumentCount >= 3U) &&
         ((0 == strcmp("run", ppcArguments[2])) ||
          (0 == strcmp("serve", ppcArguments[2])))) {
-        (void)fprintf(stderr, "algorithm traffic tests require SYSTEM/SYSTEM; "
-                      "APPLICATION paths need an independent packet transport.\n");
+        (void)fprintf(stderr, "algorithm traffic tests require SYSTEM/SYSTEM or "
+                      "APPLICATION/APPLICATION; mixed paths are not supported.\n");
         return IPSEC_ERR_NOT_SUPPORTED;
     }
     if ((4U == uiArgumentCount) &&
@@ -1935,7 +1939,7 @@ static IpsecError_t ExecuteNativeAppAlgorithmCommand(
             eError = RunNativeAppAlgorithmServer(
                 pSession->pContext, &pSession->Config, uiPort);
             ResetNativeAppStopRequest();
-            pSession->bCredentialLoaded = true;
+            pSession->bCredentialLoaded = HasNativeAppCredential(&pSession->Config);
             UpdateNativeAppSessionPeerState(pSession);
         }
     }
@@ -1957,7 +1961,7 @@ static IpsecError_t ExecuteNativeAppAlgorithmCommand(
             eError = RunNativeAppAlgorithmClient(
                 pSession->pContext, &pSession->Config, &Options);
             ResetNativeAppStopRequest();
-            pSession->bCredentialLoaded = true;
+            pSession->bCredentialLoaded = HasNativeAppCredential(&pSession->Config);
             UpdateNativeAppSessionPeerState(pSession);
         }
     }
@@ -2026,31 +2030,84 @@ static IpsecError_t ExecuteNativeAppLegacyLoad(NativeAppSession_t *pSession)
 
 static IpsecError_t ValidateNativeAppApplicationExit(NativeAppSession_t *pSession)
 {
-    IpsecIkeSaList_t IkeList = {0};
-    IpsecChildSaList_t ChildList = {0};
-    IpsecError_t eError;
     if (IPSEC_PACKET_PATH_APPLICATION != pSession->ContextConfig.Datapath.eProtectedPacketPath) {
         return IPSEC_OK;
     }
-    /* Conservative lab guard across all peers, not just the selected peer.
-     * The OS/operator must still quiesce traffic and prevent concurrent SAs.
-     */
-    eError = GetIpsecIkeSas(pSession->pContext, &IkeList);
-    if (IPSEC_OK == eError) {
-        eError = GetIpsecChildSas(pSession->pContext, &ChildList);
+    return VerifyNativeAppExitSas(pSession->pContext);
+}
+
+static IpsecError_t CloseNativeAppSession(NativeAppSession_t *pSession, bool bForce)
+{
+    IpsecError_t eError = IPSEC_OK;
+    uint32_t uiIndex;
+    bool bApplication =
+        (IPSEC_PACKET_PATH_APPLICATION == pSession->ContextConfig.Datapath.eProtectedPacketPath) ||
+        (IPSEC_PACKET_PATH_APPLICATION == pSession->ContextConfig.Datapath.ePlainPacketPath);
+    StopNativeAppPeerListener(&pSession->PeerListener);
+    ResetNativeAppStopRequest();
+    ResetNativeAppExitRequest();
+    if (bForce) {
+        pSession->bExitForced = true;
+        (void)fprintf(stderr, "FORCED EXIT: daemon resources may remain; owned packet "
+            "paths will be removed and ordinary NIC egress restored. Stop external traffic.\n");
+        return IPSEC_OK;
     }
-    if ((IPSEC_OK == eError) &&
-        ((0U != IkeList.uiCount) || (0U != ChildList.uiCount))) {
-        eError = IPSEC_ERR_RESOURCE_CONFLICT;
+    if (pSession->Config.bTerminateOnExit || bApplication) {
+        SaveNativeAppSelectedPeer(pSession);
+        (void)printf("shutdown: peer listener stopped; cleaning all resources owned by this session\n");
+        eError = CleanupNativeAppOwnedResources(pSession->pContext, &pSession->OwnedResources);
+        LockNativeAppPeerTable(&pSession->PeerTable);
+        for (uiIndex = 0U; uiIndex < pSession->PeerTable.uiCount; uiIndex++) {
+            NativeAppPeer_t *pPeer = &pSession->PeerTable.aPeers[uiIndex];
+            pPeer->bCredentialLoaded = HasNativeAppCredential(&pPeer->Config);
+        }
+        UnlockNativeAppPeerTable(&pSession->PeerTable);
+        pSession->bCredentialLoaded = HasNativeAppCredential(&pSession->Config);
+        (void)RefreshNativeAppPeerStates(pSession);
+        if (IPSEC_OK == eError) {
+            eError = ValidateNativeAppApplicationExit(pSession);
+        }
+        pSession->bExitCleaned = (IPSEC_OK == eError);
     }
-    FreeIpsecIkeSaList(&IkeList);
-    FreeIpsecChildSaList(&ChildList);
     if (IPSEC_OK != eError) {
-        (void)fprintf(stderr, "Protected APPLICATION exit refused: terminate SAs and "
-                              "stop test traffic first; "
-                      "exit --force explicitly accepts restoring ordinary NIC egress.\n");
+        (void)fprintf(stderr, "shutdown incomplete: %s; session and remaining packet paths retained. "
+            "New loads/tests are disabled. Inspect show/peer show, then retry quit.\n",
+            GetIpsecErrorString(eError));
+    }
+    else if (!pSession->bExitCleaned) {
+        (void)printf("SYSTEM detach: terminate_on_exit=false; daemon resources retained by request\n");
     }
     return eError;
+}
+
+static bool IsNativeAppShutdownCommand(uint32_t uiCount, char **ppcArguments)
+{
+    const char *pcCommand = ppcArguments[0];
+    if ((0 == strcmp(pcCommand, "quit")) || (0 == strcmp(pcCommand, "exit")) ||
+        (0 == strcmp(pcCommand, "show")) || (0 == strcmp(pcCommand, "status")) ||
+        (0 == strcmp(pcCommand, "help")) || (0 == strcmp(pcCommand, "?")) ||
+        (0 == strcmp(pcCommand, "check")) || (0 == strcmp(pcCommand, "down")) ||
+        (0 == strcmp(pcCommand, "unload"))) {
+        return true;
+    }
+    if (uiCount < 2U) {
+        return false;
+    }
+    if ((0 == strcmp(pcCommand, "ike")) || (0 == strcmp(pcCommand, "child"))) {
+        return 0 == strcmp(ppcArguments[1], "terminate");
+    }
+    if ((0 == strcmp(pcCommand, "connection")) || (0 == strcmp(pcCommand, "credential"))) {
+        return (0 == strcmp(ppcArguments[1], "show")) || (0 == strcmp(ppcArguments[1], "unload"));
+    }
+    if (0 == strcmp(pcCommand, "config")) {
+        return 0 == strcmp(ppcArguments[1], "show");
+    }
+    if (0 == strcmp(pcCommand, "peer")) {
+        return (0 == strcmp(ppcArguments[1], "show")) || (0 == strcmp(ppcArguments[1], "select")) ||
+            ((3U == uiCount) && (0 == strcmp(ppcArguments[1], "listen")) &&
+             ((0 == strcmp(ppcArguments[2], "show")) || (0 == strcmp(ppcArguments[2], "stop"))));
+    }
+    return false;
 }
 
 static IpsecError_t ExecuteNativeAppCommand(
@@ -2064,6 +2121,11 @@ static IpsecError_t ExecuteNativeAppCommand(
     *pbExit = false;
     if (0U == uiArgumentCount) {
         eError = IPSEC_OK;
+    }
+    else if (pSession->OwnedResources.bClosing &&
+             !IsNativeAppShutdownCommand(uiArgumentCount, ppcArguments)) {
+        (void)fprintf(stderr, "shutdown recovery: only inspection, selection, termination, unload and exit are allowed\n");
+        eError = IPSEC_ERR_RESOURCE_CONFLICT;
     }
     else if (0 == strcmp("config", ppcArguments[0])) {
         eError = ExecuteNativeAppConfigCommand(pSession, uiArgumentCount,
@@ -2198,20 +2260,55 @@ static IpsecError_t ExecuteNativeAppCommand(
               ((2U == uiArgumentCount) && (0 == strcmp("--force", ppcArguments[1])))) &&
              ((0 == strcmp("exit", ppcArguments[0])) ||
               (0 == strcmp("quit", ppcArguments[0])))) {
-        eError = (2U == uiArgumentCount) ? IPSEC_OK :
-            ValidateNativeAppApplicationExit(pSession);
+        eError = CloseNativeAppSession(pSession, 2U == uiArgumentCount);
         *pbExit = (IPSEC_OK == eError);
-        if (*pbExit && (IPSEC_PACKET_PATH_APPLICATION == pSession->ContextConfig.Datapath.eProtectedPacketPath)) {
-            (void)fprintf(stderr, "Protected APPLICATION teardown removes owned TUN/filters "
-                          "and restores NIC egress. "
-                          "Daemon SAs/connections are not automatically deleted.\n");
-        }
     }
     else {
         eError = IPSEC_ERR_INVALID_ARGUMENT;
     }
     SaveNativeAppSelectedPeer(pSession);
     return eError;
+}
+
+static IpsecError_t ReadNativeAppInput(char *pcLine, size_t zCapacity, bool *pbEof)
+{
+    size_t zLength = 0U;
+    bool bOverflow = false;
+    *pbEof = false;
+    while (!IsNativeAppStopRequested() && !IsNativeAppExitRequested()) {
+        struct pollfd Input = {.fd = STDIN_FILENO, .events = POLLIN};
+        char cValue;
+        int32_t iReady = poll(&Input, 1U, 250);
+        ssize_t lRead;
+        if ((iReady < 0) && (EINTR == errno)) {
+            continue;
+        }
+        if ((iReady < 0) || (0 != (Input.revents & (POLLERR | POLLNVAL)))) {
+            return IPSEC_ERR_FILE_READ;
+        }
+        if (0 == iReady) {
+            continue;
+        }
+        lRead = read(STDIN_FILENO, &cValue, 1U);
+        if ((lRead < 0) && ((EINTR == errno) || (EAGAIN == errno))) {
+            continue;
+        }
+        if (lRead < 0) {
+            return IPSEC_ERR_FILE_READ;
+        }
+        if ((0 == lRead) || ('\n' == cValue)) {
+            pcLine[zLength] = '\0';
+            *pbEof = (0 == lRead) && (0U == zLength);
+            return bOverflow ? IPSEC_ERR_BUFFER_TOO_SMALL : IPSEC_OK;
+        }
+        if (zLength + 1U < zCapacity) {
+            pcLine[zLength++] = cValue;
+        }
+        else {
+            bOverflow = true; /* Drain the rest; never execute a truncated command. */
+        }
+    }
+    return IPSEC_ERR_CANCELLED;
 }
 
 static int32_t RunNativeAppInteractive(NativeAppSession_t *pSession)
@@ -2224,28 +2321,43 @@ static int32_t RunNativeAppInteractive(NativeAppSession_t *pSession)
     while (!bExit) {
         uint32_t uiArgumentCount = 0U;
         IpsecError_t eError;
+        bool bEof = false;
 
-        PrintNativeAppPrompt(pSession);
-        errno = 0;
-        if (NULL == fgets(acLine, sizeof(acLine), stdin)) {
-            HideNativeAppPrompt(pSession);
-            if (EINTR == errno) {
-                clearerr(stdin);
-                (void)printf("\n");
-                continue;
-            }
-            else {
-                (void)printf("\n");
-                if (IPSEC_OK != ValidateNativeAppApplicationExit(pSession)) {
-                    (void)fprintf(stderr, "EOF forces cleanup: protected diversion will be removed; "
-                                  "stop traffic externally.\n");
-                    return 1;
-                }
+        if (IsNativeAppExitRequested()) {
+            if (IPSEC_OK == CloseNativeAppSession(pSession, false)) {
+                bExit = true;
                 break;
             }
+            ResetNativeAppExitRequest();
+            ResetNativeAppStopRequest();
         }
-        else {
-            HideNativeAppPrompt(pSession);
+        PrintNativeAppPrompt(pSession);
+        eError = ReadNativeAppInput(acLine, sizeof(acLine), &bEof);
+        HideNativeAppPrompt(pSession);
+        if (IPSEC_ERR_CANCELLED == eError) {
+            (void)printf("\n");
+            ResetNativeAppStopRequest();
+            continue;
+        }
+        if (bEof || (IPSEC_ERR_FILE_READ == eError)) {
+            (void)printf("\ninput closed; attempting normal shutdown\n");
+            if (IPSEC_OK == CloseNativeAppSession(pSession, false)) {
+                bExit = true;
+                break;
+            }
+            if (0 == isatty(STDIN_FILENO)) {
+                (void)fprintf(stderr, "input unavailable; process/remaining paths retained. "
+                    "Resolve the failure externally and send SIGTERM to retry cleanup.\n");
+                while (!IsNativeAppExitRequested() && !IsNativeAppStopRequested()) {
+                    (void)poll(NULL, 0U, 250);
+                }
+            }
+            ResetNativeAppStopRequest();
+            continue;
+        }
+        if (IPSEC_OK != eError) {
+            (void)fprintf(stderr, "command input failed: %s\n", GetIpsecErrorString(eError));
+            continue;
         }
         if (!ParseNativeAppCommandLine(acLine, pacArguments,
                                        NATIVE_APP_COMMAND_ARGUMENT_COUNT,
@@ -2265,7 +2377,10 @@ static int32_t RunNativeAppInteractive(NativeAppSession_t *pSession)
             /* The command completed or requested exit. */
         }
     }
-    (void)printf("session closed; daemon resources were not changed on exit\n");
+    (void)printf("session closed; %s\n",
+        pSession->bExitForced ? "forced teardown; daemon cleanup was not guaranteed" :
+        (pSession->bExitCleaned ? "owned IKE/CHILD, connections and credentials cleaned; files preserved" :
+                                "SYSTEM daemon resources retained (terminate_on_exit=false)"));
     return 0;
 }
 
@@ -2284,6 +2399,10 @@ static IpsecError_t InitializeNativeAppSession(
         pSession->bVerbose = bVerbose;
         InitializeNativeAppConfig(&pSession->Config);
         InitializeNativeAppConfig(&pSession->BaseConfig);
+    }
+    eError = InitializeNativeAppOwnedResources(&pSession->OwnedResources);
+    if (IPSEC_OK != eError) {
+        return eError;
     }
     if (0 != pthread_mutex_init(&pSession->OutputMutex, NULL)) {
         return IPSEC_ERR_INTERNAL;
@@ -2455,6 +2574,8 @@ int32_t RunNativeAppCli(
         return 1;
     }
     else {
+        Session.Config.pOwnedResources = &Session.OwnedResources;
+        Session.BaseConfig.pOwnedResources = &Session.OwnedResources;
         Session.ContextConfig = Session.Config;
         if ((IPSEC_PACKET_PATH_APPLICATION == Session.Config.Datapath.eProtectedPacketPath) &&
             (Options.iCommandIndex < iArgumentCount)) {

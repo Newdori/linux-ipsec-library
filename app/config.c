@@ -440,6 +440,7 @@ void InitializeNativeAppConfig(NativeAppConfig_t *pConfig)
         pConfig->Datapath.uiStructSize = sizeof(pConfig->Datapath);
         pConfig->eRole = NATIVE_APP_ROLE_INITIATOR;
         pConfig->eMode = IPSEC_MODE_TUNNEL;
+        pConfig->bTerminateOnExit = true;
         pConfig->ePlainNetfilterHook =
             NATIVE_APP_PLAIN_NETFILTER_INPUT;
         pConfig->uiTimeoutMs = 30000U;

@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #define NATIVE_APP_PEER_PROTOCOL "RCST/2"
@@ -264,14 +265,65 @@ static IpsecError_t WaitNativeAppSocket(
     }
 }
 
+static uint64_t GetNativeAppPeerTimeMs(void)
+{
+    struct timespec Time;
+    if (0 != clock_gettime(CLOCK_MONOTONIC, &Time)) {
+        return UINT64_MAX;
+    }
+    return (uint64_t)Time.tv_sec * 1000U + (uint64_t)Time.tv_nsec / 1000000U;
+}
+
+/* One deadline covers the complete message, including partial/trickled data.
+ * The listener owns and closes the socket; stop never closes another thread's fd. */
+static IpsecError_t WaitNativeAppPeerMessageSocket(
+    int32_t iSocket, int16_t sEvents, uint64_t ullDeadline,
+    const atomic_bool *pbStopRequested, char *pcError, uint32_t uiErrorLength)
+{
+    for (;;) {
+        uint64_t ullNow = GetNativeAppPeerTimeMs();
+        struct pollfd PollFd = {.fd = iSocket, .events = sEvents};
+        int32_t iResult;
+        if ((NULL != pbStopRequested) && atomic_load(pbStopRequested)) {
+            return IPSEC_ERR_CANCELLED;
+        }
+        else if (UINT64_MAX == ullNow) {
+            return IPSEC_ERR_INTERNAL;
+        }
+        else if (ullNow >= ullDeadline) {
+            SetNativeAppPeerError(pcError, uiErrorLength, "peer registration timed out");
+            return IPSEC_ERR_VICI_TIMEOUT;
+        }
+        iResult = poll(&PollFd, 1U, (int32_t)((ullDeadline - ullNow > 250U) ?
+            250U : ullDeadline - ullNow));
+        if ((0 == iResult) || ((0 > iResult) && (EINTR == errno))) {
+            continue;
+        }
+        else if ((0 < iResult) && (0 != (PollFd.revents & sEvents))) {
+            return IPSEC_OK; /* Drain readable data even alongside POLLHUP. */
+        }
+        else {
+            SetNativeAppPeerError(pcError, uiErrorLength, "peer registration socket failed");
+            return IPSEC_ERR_INTERNAL;
+        }
+    }
+}
+
 static IpsecError_t SendNativeAppPeerMessage(
     int32_t iSocket,
     const char *pcMessage,
+    uint32_t uiTimeoutMs,
+    const atomic_bool *pbStopRequested,
     char *pcError,
     uint32_t uiErrorLength)
 {
     size_t zLength = strnlen(pcMessage, NATIVE_APP_PEER_MESSAGE_LENGTH);
     size_t zOffset = 0U;
+    uint64_t ullStart = GetNativeAppPeerTimeMs();
+
+    if (UINT64_MAX == ullStart) {
+        return IPSEC_ERR_INTERNAL;
+    }
 
     if (zLength >= NATIVE_APP_PEER_MESSAGE_LENGTH) {
         return IPSEC_ERR_BUFFER_TOO_SMALL;
@@ -280,10 +332,15 @@ static IpsecError_t SendNativeAppPeerMessage(
         /* Send the complete bounded message. */
     }
     while (zOffset < zLength) {
+        IpsecError_t eError = WaitNativeAppPeerMessageSocket(iSocket, POLLOUT,
+            ullStart + uiTimeoutMs, pbStopRequested, pcError, uiErrorLength);
+        if (IPSEC_OK != eError) {
+            return eError;
+        }
         ssize_t zSent = send(iSocket, pcMessage + zOffset,
-                             zLength - zOffset, MSG_NOSIGNAL);
+                             zLength - zOffset, MSG_NOSIGNAL | MSG_DONTWAIT);
 
-        if ((0 > zSent) && (EINTR == errno)) {
+        if ((0 > zSent) && ((EINTR == errno) || (EAGAIN == errno) || (EWOULDBLOCK == errno))) {
             continue;
         }
         else if (0 >= zSent) {
@@ -303,26 +360,32 @@ static IpsecError_t ReceiveNativeAppPeerMessage(
     char *pcMessage,
     uint32_t uiMessageLength,
     uint32_t uiTimeoutMs,
+    const atomic_bool *pbStopRequested,
     char *pcError,
     uint32_t uiErrorLength)
 {
     uint32_t uiOffset = 0U;
     IpsecError_t eError = IPSEC_OK;
+    uint64_t ullStart = GetNativeAppPeerTimeMs();
+
+    if (UINT64_MAX == ullStart) {
+        return IPSEC_ERR_INTERNAL;
+    }
 
     while ((IPSEC_OK == eError) &&
            ((uiOffset + 1U) < uiMessageLength)) {
         ssize_t zRead;
 
-        eError = WaitNativeAppSocket(iSocket, POLLIN, uiTimeoutMs,
-                                     pcError, uiErrorLength);
+        eError = WaitNativeAppPeerMessageSocket(iSocket, POLLIN,
+            ullStart + uiTimeoutMs, pbStopRequested, pcError, uiErrorLength);
         if (IPSEC_OK != eError) {
             break;
         }
         else {
-            zRead = recv(iSocket, pcMessage + uiOffset, 1U, 0);
+            zRead = recv(iSocket, pcMessage + uiOffset, 1U, MSG_DONTWAIT);
         }
 
-        if ((0 > zRead) && (EINTR == errno)) {
+        if ((0 > zRead) && ((EINTR == errno) || (EAGAIN == errno) || (EWOULDBLOCK == errno))) {
             continue;
         }
         else if (0 >= zRead) {
@@ -866,6 +929,7 @@ static IpsecError_t AcceptNativeAppPeerConnection(
     const NativeAppConfig_t *pBaseConfig,
     NativeAppPeerTable_t *pTable,
     NativeAppPeer_t *pPeer,
+    const atomic_bool *pbStopRequested,
     char *pcError,
     uint32_t uiErrorLength)
 {
@@ -916,7 +980,7 @@ static IpsecError_t AcceptNativeAppPeerConnection(
     if (IPSEC_OK == eError) {
         eError = ReceiveNativeAppPeerMessage(
             iPeerSocket, acMessage, sizeof(acMessage),
-            pBaseConfig->uiTimeoutMs, pcError, uiErrorLength);
+            pBaseConfig->uiTimeoutMs, pbStopRequested, pcError, uiErrorLength);
     }
     if (IPSEC_OK == eError) {
         pcProtocol = strtok_r(acMessage, " ", &pcSave);
@@ -996,7 +1060,7 @@ static IpsecError_t AcceptNativeAppPeerConnection(
         }
         else {
             eError = SendNativeAppPeerMessage(iPeerSocket, acMessage,
-                                               pcError, uiErrorLength);
+                pBaseConfig->uiTimeoutMs, pbStopRequested, pcError, uiErrorLength);
         }
     }
     if (IPSEC_OK == eError) {
@@ -1046,7 +1110,7 @@ IpsecError_t AcceptNativeAppPeer(
     }
     if (IPSEC_OK == eError) {
         eError = AcceptNativeAppPeerConnection(
-            iServerSocket, pBaseConfig, pTable, pPeer, pcError,
+            iServerSocket, pBaseConfig, pTable, pPeer, NULL, pcError,
             uiErrorLength);
     }
     else {
@@ -1090,10 +1154,14 @@ static void *RunNativeAppPeerListener(void *pvArgument)
         else if (IPSEC_OK == eError) {
             eError = AcceptNativeAppPeerConnection(
                 pListener->iServerSocket, &pListener->Config,
-                pListener->pTable, &Peer, acError, sizeof(acError));
+                pListener->pTable, &Peer, &pListener->bStopRequested,
+                acError, sizeof(acError));
         }
         else {
             NotifyNativeAppPeerListener(pListener, eError, NULL, acError);
+            break;
+        }
+        if (atomic_load(&pListener->bStopRequested)) {
             break;
         }
         NotifyNativeAppPeerListener(
@@ -1209,13 +1277,13 @@ IpsecError_t RegisterNativeAppPeer(
         eError = IPSEC_ERR_BUFFER_TOO_SMALL;
     }
     else {
-        eError = SendNativeAppPeerMessage(iSocket, acMessage, pcError,
-                                           uiErrorLength);
+        eError = SendNativeAppPeerMessage(iSocket, acMessage,
+            pBaseConfig->uiTimeoutMs, NULL, pcError, uiErrorLength);
     }
     if (IPSEC_OK == eError) {
         eError = ReceiveNativeAppPeerMessage(
             iSocket, acMessage, sizeof(acMessage), pBaseConfig->uiTimeoutMs,
-            pcError, uiErrorLength);
+            NULL, pcError, uiErrorLength);
     }
     if (IPSEC_OK == eError) {
         char *pcToken = strtok_r(acMessage, " ", &pcSave);

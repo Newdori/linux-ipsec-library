@@ -473,6 +473,20 @@ static IpsecError_t ReceiveApplicationProtectedPacket(IpsecContext_t *pContext,
         pPacket->eDirection = IPSEC_PACKET_DIRECTION_OUTBOUND;
         eError = ValidateProtectedApplicationScope(
             pContext->pProtectedApplicationState, pPacket, false);
+        if (IPSEC_OK != eError) {
+            /* Header metadata only: never dump payload or keys into logs. */
+            LogIpsec(pContext, IPSEC_LOG_WARNING,
+                "protected TUN packet rejected: bytes=%zu first=0x%02x "
+                "byte9=%u flags_fragment=0x%04x bytes12_13=0x%04x error=%s",
+                pPacket->zLength,
+                (pPacket->zLength > 0U) ? pPacket->pucData[0] : 0U,
+                (pPacket->zLength > 9U) ? pPacket->pucData[9] : 0U,
+                (pPacket->zLength > 7U) ?
+                    ((uint32_t)pPacket->pucData[6] << 8U) | pPacket->pucData[7] : 0U,
+                (pPacket->zLength > 13U) ?
+                    ((uint32_t)pPacket->pucData[12] << 8U) | pPacket->pucData[13] : 0U,
+                GetIpsecErrorString(eError));
+        }
     }
     if (IPSEC_OK != eError) {
         pPacket->zLength = 0U;

@@ -671,6 +671,30 @@ IpsecError_t RemoveIpsecConnection(
     if (IPSEC_OK == eError) {
         eError = ExecuteViciCommand(pContext, "unload-conn", &Message, NULL,
                                     NULL, NULL, NULL, &Result);
+        if (IPSEC_ERR_VICI_COMMAND == eError) {
+            IpsecConnectionList_t List = {0};
+            IpsecDiagnostic_t UnloadDiagnostic = {.uiStructSize = sizeof(UnloadDiagnostic)};
+            bool bSavedDiagnostic = IPSEC_OK == GetIpsecLastDiagnostic(pContext, &UnloadDiagnostic);
+            IpsecError_t eQuery = GetIpsecConnections(pContext, &List);
+            bool bPresent = false;
+            uint32_t uiIndex;
+            for (uiIndex = 0U; (IPSEC_OK == eQuery) && (uiIndex < List.uiCount); uiIndex++) {
+                bPresent = bPresent || (0 == strcmp(pcName, List.pItems[uiIndex].acName));
+            }
+            FreeIpsecConnectionList(&List);
+            if ((IPSEC_OK == eQuery) && !bPresent) {
+                /* Already absent in charon: still finish our owned peer/filter cleanup. */
+                eError = IPSEC_OK;
+            }
+            else if (IPSEC_OK != eQuery) {
+                eError = eQuery; /* Absence is unconfirmed; retain local filters. */
+            }
+            else if (bSavedDiagnostic && (0 == pthread_mutex_lock(&pContext->CommandMutex))) {
+                /* A successful existence query must not hide the unload failure. */
+                pContext->LastDiagnostic = UnloadDiagnostic;
+                (void)pthread_mutex_unlock(&pContext->CommandMutex);
+            }
+        }
     }
     else {
         /* Preserve message error. */

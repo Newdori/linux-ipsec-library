@@ -59,9 +59,30 @@ typedef enum NativeAppPeerState {
 typedef struct NativeAppTargetStatus {
     uint32_t uiReqid;
     bool bConnectionLoaded;
+    bool bIkePresent;
+    bool bChildPresent;
     bool bIkeEstablished;
     bool bChildInstalled;
 } NativeAppTargetStatus_t;
+
+typedef struct NativeAppOwnedResource {
+    char acConnectionName[IPSEC_NAME_LENGTH];
+    char acChildName[IPSEC_NAME_LENGTH];
+    char acLogicalCredentialId[IPSEC_NAME_LENGTH];
+    char acDaemonCredentialId[IPSEC_NAME_LENGTH];
+    uint32_t uiTimeoutMs;
+    uint32_t auiPendingReqids[64];
+    uint32_t uiPendingReqidCount;
+    bool bConnectionOwned;
+    bool bCredentialOwned;
+} NativeAppOwnedResource_t;
+
+typedef struct NativeAppOwnedResources {
+    NativeAppOwnedResource_t aItems[NATIVE_APP_PEER_CAPACITY + 1U];
+    uint32_t uiCount;
+    char acNonce[33];
+    bool bClosing;
+} NativeAppOwnedResources_t;
 
 typedef struct NativeAppConfig {
     NativeAppRole_t eRole;
@@ -87,7 +108,31 @@ typedef struct NativeAppConfig {
     bool bTerminateOnExit;
     uint32_t uiTimeoutMs;
     uint32_t uiPeerPort;
+    /* Runtime-only ownership ledger; never read from or written to a file.
+     * App control calls are serialized on the CLI thread. Peer registration
+     * copies this pointer but never mutates the ledger. */
+    NativeAppOwnedResources_t *pOwnedResources;
 } NativeAppConfig_t;
+
+IpsecError_t InitializeNativeAppOwnedResources(NativeAppOwnedResources_t *pResources);
+IpsecError_t AddNativeAppConnection(IpsecContext_t *pContext,
+    const NativeAppConfig_t *pConfig, const IpsecConnectionConfig_t *pConnection);
+IpsecError_t AddNativeAppPsk(IpsecContext_t *pContext,
+    const NativeAppConfig_t *pConfig, const IpsecPsk_t *pPsk);
+IpsecError_t RemoveNativeAppCredential(IpsecContext_t *pContext,
+    const NativeAppConfig_t *pConfig);
+bool HasNativeAppCredential(const NativeAppConfig_t *pConfig);
+bool HasNativeAppOwnedSaTarget(const NativeAppOwnedResources_t *pResources,
+    const char *pcName, bool bChild);
+const char *GetNativeAppDaemonCredentialId(const NativeAppConfig_t *pConfig);
+IpsecError_t TerminateNativeAppTargetSas(IpsecContext_t *pContext,
+    const NativeAppConfig_t *pConfig);
+IpsecError_t CleanupNativeAppOwnedResources(IpsecContext_t *pContext,
+    NativeAppOwnedResources_t *pResources);
+IpsecError_t VerifyNativeAppExitSas(IpsecContext_t *pContext);
+void RequestNativeAppExit(void);
+bool IsNativeAppExitRequested(void);
+void ResetNativeAppExitRequest(void);
 
 /* Context-wide settings are immutable until the application restarts. */
 bool IsNativeAppDatapathKey(const char *pcKey);
@@ -295,7 +340,42 @@ typedef struct NativeAppAlgorithmCleanup {
     bool bLocalVerified;
 } NativeAppAlgorithmCleanup_t;
 
+#define NATIVE_APP_PACKET_EVIDENCE_CAPACITY 4U
+
+typedef struct NativeAppPacketEvidence {
+    uint32_t uiProbeSequence;
+    uint32_t uiEspLength;
+    uint32_t uiEspSpi;
+    uint32_t uiEspSequence;
+    uint32_t uiPlainLength;
+    bool bOutbound;
+    bool bCaptureAttempted;
+    bool bEspCaptured;
+    bool bEspRelayed;
+    bool bEspValid;
+    bool bSubmitAttempted;
+    bool bEspSubmitted;
+    bool bPlainAttempted;
+    bool bPlainReceived;
+    bool bCompareAttempted;
+    bool bPayloadMatch;
+    bool bPeerConfirmed;
+    IpsecError_t eError;
+} NativeAppPacketEvidence_t;
+
+typedef struct NativeAppPacketTestResult {
+    bool bAttempted;
+    uint32_t uiSent;
+    uint32_t uiReceived;
+    uint32_t uiExpectedInboundSpi;
+    uint32_t uiExpectedOutboundSpi;
+    NativeAppPacketEvidence_t aPackets[NATIVE_APP_PACKET_EVIDENCE_CAPACITY];
+    IpsecError_t eError;
+    char acStage[48];
+} NativeAppPacketTestResult_t;
+
 typedef struct NativeAppAlgorithmCaseResult {
+    NativeAppPacketTestResult_t PacketTest;
     NativeAppAlgorithmCase_t Case;
     NativeAppAlgorithmResult_t eResult;
     NativeAppAlgorithmResult_t ePeerCaseResult;
