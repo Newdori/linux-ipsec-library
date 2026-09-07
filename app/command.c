@@ -5,6 +5,66 @@
 #include <stdlib.h>
 #include <string.h>
 
+bool ParseNativeAppStartupOptions(
+    int32_t iArgumentCount,
+    char **ppcArguments,
+    NativeAppStartupOptions_t *pOptions)
+{
+    int32_t iIndex = 1;
+    if ((iArgumentCount < 1) || (NULL == ppcArguments) ||
+        (NULL == ppcArguments[0]) || (NULL == pOptions)) {
+        return false;
+    }
+    (void)memset(pOptions, 0, sizeof(*pOptions));
+    pOptions->iCommandIndex = iArgumentCount;
+    while (iIndex < iArgumentCount) {
+        const char *pcArgument = ppcArguments[iIndex];
+        const char **ppcPath = NULL;
+        if (NULL == pcArgument) {
+            return false;
+        }
+        if ((0 == strcmp("-c", pcArgument)) ||
+            (0 == strcmp("--app-config", pcArgument))) {
+            ppcPath = &pOptions->pcApplicationConfigPath;
+        }
+        else if (0 == strcmp("--config", pcArgument)) {
+            ppcPath = &pOptions->pcConfigPath;
+        }
+        else if (0 == strcmp("--management-config", pcArgument)) {
+            ppcPath = &pOptions->pcManagementConfigPath;
+        }
+        else if (0 == strcmp("--generate-psk", pcArgument)) {
+            ppcPath = &pOptions->pcGeneratePskPath;
+        }
+        else if ((0 == strcmp("-v", pcArgument)) ||
+                 (0 == strcmp("--verbose", pcArgument))) {
+            pOptions->bVerbose = true;
+        }
+        else if ((0 == strcmp("-h", pcArgument)) ||
+                 (0 == strcmp("--help", pcArgument))) {
+            pOptions->bHelp = true;
+        }
+        else if ('-' == pcArgument[0]) {
+            return false;
+        }
+        else {
+            pOptions->iCommandIndex = iIndex;
+            break;
+        }
+        if (NULL != ppcPath) {
+            if (((iIndex + 1) >= iArgumentCount) ||
+                (NULL == ppcArguments[iIndex + 1]) ||
+                ('\0' == ppcArguments[iIndex + 1][0]) ||
+                ('-' == ppcArguments[iIndex + 1][0])) {
+                return false;
+            }
+            *ppcPath = ppcArguments[++iIndex];
+        }
+        iIndex++;
+    }
+    return true;
+}
+
 static bool IsNativeAppNamedShowScope(const char *pcScope)
 {
     return (0 == strcmp("connections", pcScope)) ||

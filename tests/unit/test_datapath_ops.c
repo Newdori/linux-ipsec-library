@@ -22,6 +22,15 @@ static uint32_t guiPlainCleanup;
 static uint32_t guiSubmissions;
 static uint32_t guiChildren;
 static bool gbLibLoaded;
+static bool gbControlBeforeEsp;
+static bool gbMalformedControl;
+static uint32_t guiProtectedReceives;
+
+uint64_t GetIpsecMonotonicMilliseconds(void)
+{
+    static uint64_t gullNow = 1000U;
+    return gullNow++;
+}
 
 static IpsecError_t ProbeTestLib(IpsecContext_t *pContext,
     IpsecDatapathStatus_t *pStatus)
@@ -223,19 +232,89 @@ static void SetTestChecksum(uint8_t *pucData)
     pucData[11] = (uint8_t)uiSum;
 }
 
+static void SetTestIcmpv6Checksum(uint8_t *pucData, size_t zLength)
+{
+    const size_t zOffset = 40U;
+    const size_t zIcmpLength = zLength - zOffset;
+    uint32_t uiSum = (uint32_t)zIcmpLength + 58U;
+    size_t zIndex;
+
+    pucData[zOffset + 2U] = 0U;
+    pucData[zOffset + 3U] = 0U;
+    for (zIndex = 8U; zIndex < 40U; zIndex += 2U) {
+        uiSum += ((uint32_t)pucData[zIndex] << 8U) | pucData[zIndex + 1U];
+    }
+    for (zIndex = zOffset; zIndex < zLength; zIndex += 2U) {
+        uiSum += (uint32_t)pucData[zIndex] << 8U;
+        if (zIndex + 1U < zLength) {
+            uiSum += pucData[zIndex + 1U];
+        }
+    }
+    while (uiSum > UINT16_MAX) {
+        uiSum = (uiSum & UINT16_MAX) + (uiSum >> 16U);
+    }
+    uiSum = (~uiSum) & UINT16_MAX;
+    pucData[zOffset + 2U] = (uint8_t)(uiSum >> 8U);
+    pucData[zOffset + 3U] = (uint8_t)uiSum;
+}
+
+static void BuildTestRouterSolicitation(uint8_t *pucData)
+{
+    memset(pucData, 0, 48U);
+    pucData[0] = 0x60U;
+    pucData[5] = 8U;
+    pucData[6] = 58U;
+    pucData[7] = 255U;
+    pucData[8] = 0xfeU;
+    pucData[9] = 0x80U;
+    pucData[23] = 1U;
+    pucData[24] = 0xffU;
+    pucData[25] = 2U;
+    pucData[39] = 2U;
+    pucData[40] = 133U;
+    SetTestIcmpv6Checksum(pucData, 48U);
+}
+
 IpsecError_t ReceiveIpsecProtectedApplicationPacket(
     IpsecProtectedApplicationState_t *pState,
     IpsecProtectedPacket_t *pPacket, uint32_t uiTimeoutMs)
 {
+    uint32_t uiLocalAddress = pState->uiLocalAddress;
+    uint32_t uiRemoteAddress = pState->uiRemoteAddress;
+    uint32_t uiIndex;
+
     (void)uiTimeoutMs;
+    guiProtectedReceives++;
+    if (gbControlBeforeEsp && (1U == guiProtectedReceives)) {
+        BuildTestRouterSolicitation(pPacket->pucData);
+        if (gbMalformedControl) {
+            pPacket->pucData[42] ^= 1U;
+        }
+        pPacket->zLength = 48U;
+        return IPSEC_OK;
+    }
     memset(pPacket->pucData, 0, 40U);
     pPacket->pucData[0] = 0x45U;
     pPacket->pucData[3] = 40U;
     pPacket->pucData[8] = 64U;
     pPacket->pucData[9] = 50U;
     pPacket->pucData[23] = 1U;
-    memcpy(pPacket->pucData + 12U, &pState->uiLocalAddress, 4U);
-    memcpy(pPacket->pucData + 16U, &pState->uiRemoteAddress, 4U);
+    if (0U == uiRemoteAddress) {
+        for (uiIndex = 0U;
+             uiIndex < IPSEC_PROTECTED_APPLICATION_PEER_CAPACITY;
+             uiIndex++) {
+            if (pState->aPeers[uiIndex].bInUse) {
+                uiLocalAddress = pState->aPeers[uiIndex].uiLocalAddress;
+                uiRemoteAddress = pState->aPeers[uiIndex].uiRemoteAddress;
+                break;
+            }
+            else {
+                /* Find the first registered dynamic peer. */
+            }
+        }
+    }
+    memcpy(pPacket->pucData + 12U, &uiLocalAddress, 4U);
+    memcpy(pPacket->pucData + 16U, &uiRemoteAddress, 4U);
     SetTestChecksum(pPacket->pucData);
     pPacket->zLength = 40U;
     return IPSEC_OK;
@@ -424,7 +503,7 @@ static void VerifyDefaultsAndPacketTypes(void)
     IpsecContext_t Context = {0};
     IpsecDatapathConfig_t Config = {.uiStructSize = sizeof(Config),
         .ePlainPacketPath = IPSEC_PACKET_PATH_APPLICATION};
-    uint8_t aucPacket[40] = {0};
+    uint8_t aucPacket[48] = {0};
     IpsecProtectedPacket_t Packet = {.uiStructSize = sizeof(Packet),
         .pucData = aucPacket, .zCapacity = sizeof(aucPacket),
         .zLength = sizeof(aucPacket),
@@ -437,6 +516,14 @@ static void VerifyDefaultsAndPacketTypes(void)
     CHECK(IPSEC_ERR_INVALID_ARGUMENT ==
         ConfigureIpsecDatapath(&Context, &Config));
     CHECK(IPSEC_ERR_PACKET_TYPE == ValidateIpsecProtectedPacket(&Packet));
+    BuildTestRouterSolicitation(aucPacket);
+    CHECK(IsIpsecProtectedTunControlPacket(aucPacket, 48U));
+    aucPacket[42] ^= 1U;
+    CHECK(!IsIpsecProtectedTunControlPacket(aucPacket, 48U));
+    BuildTestRouterSolicitation(aucPacket);
+    aucPacket[40] = 128U;
+    SetTestIcmpv6Checksum(aucPacket, 48U);
+    CHECK(!IsIpsecProtectedTunControlPacket(aucPacket, 48U));
 }
 
 static void VerifyDynamicProtectedPeers(void)
@@ -452,6 +539,9 @@ static void VerifyDynamicProtectedPeers(void)
         IPSEC_PACKET_PATH_APPLICATION, IPSEC_PACKET_PATH_SYSTEM);
     IpsecDatapathStatusEx_t Status = {.uiStructSize = sizeof(Status)};
     bool bAdded = false;
+    uint8_t aucPacket[IPSEC_PROTECTED_PACKET_CAPACITY];
+    IpsecProtectedPacket_t Packet = {.uiStructSize = sizeof(Packet),
+        .pucData = aucPacket, .zCapacity = sizeof(aucPacket)};
 
     Config.acProtectedLocalAddress[0] = '\0';
     Config.acProtectedRemoteAddress[0] = '\0';
@@ -472,6 +562,17 @@ static void VerifyDynamicProtectedPeers(void)
     CHECK(bAdded);
     CHECK(MatchIpsecProtectedPeerInternal(
         &Context, "192.0.2.1", "192.0.2.2"));
+    guiProtectedReceives = 0U;
+    gbControlBeforeEsp = true;
+    CHECK(IPSEC_OK == ReceiveIpsecProtectedPacket(&Context, &Packet, 1000U));
+    CHECK((2U == guiProtectedReceives) && (40U == Packet.zLength));
+    guiProtectedReceives = 0U;
+    gbMalformedControl = true;
+    CHECK(IPSEC_ERR_PACKET_TYPE ==
+        ReceiveIpsecProtectedPacket(&Context, &Packet, 1000U));
+    CHECK((1U == guiProtectedReceives) && (0U == Packet.zLength));
+    gbMalformedControl = false;
+    gbControlBeforeEsp = false;
     bAdded = true;
     CHECK(IPSEC_OK == RegisterIpsecProtectedPeerInternal(
         &Context, &Connection, &bAdded));

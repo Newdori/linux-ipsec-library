@@ -7,16 +7,6 @@
 #include <string.h>
 #include <unistd.h>
 
-typedef struct NativeAppStartupOptions {
-    const char *pcConfigPath;
-    const char *pcApplicationConfigPath;
-    const char *pcManagementConfigPath;
-    const char *pcGeneratePskPath;
-    int32_t iCommandIndex;
-    bool bVerbose;
-    bool bHelp;
-} NativeAppStartupOptions_t;
-
 typedef struct NativeAppSession {
     IpsecContext_t *pContext;
     NativeAppConfig_t BaseConfig;
@@ -26,6 +16,7 @@ typedef struct NativeAppSession {
     NativeAppPeerTable_t PeerTable;
     NativeAppPeerListener_t PeerListener;
     NativeAppOwnedResources_t OwnedResources;
+    NativeAppDiagnosticLog_t DiagnosticLog;
     pthread_mutex_t OutputMutex;
     char acConfigPath[NATIVE_APP_PATH_LENGTH];
     char acApplicationConfigPath[NATIVE_APP_PATH_LENGTH];
@@ -115,6 +106,12 @@ static void LogNativeApp(
     NativeAppSession_t *pSession = (NativeAppSession_t *)pvUserData;
     bool bRestorePrompt;
 
+    if (NULL != pSession) {
+        WriteNativeAppDiagnosticLog(&pSession->DiagnosticLog, eLevel, pcMessage);
+    }
+    else {
+        /* A logger without session state has no diagnostic file sink. */
+    }
     if ((NULL != pSession) && !pSession->bVerbose &&
         (IPSEC_LOG_WARNING < eLevel)) {
         return;
@@ -154,10 +151,16 @@ static void LogNativeApp(
 static void PrintNativeAppUsage(const char *pcProgram)
 {
     (void)printf(
-        "Usage: %s --app-config FILE [--management-config LEGACY_FILE]\n"
-        "          [--verbose] [COMMAND ...]\n"
-        "       %s [--config LEGACY_FILE] [--verbose] [COMMAND ...]\n"
+        "Usage: %s -c FILE [-v] [COMMAND ...]\n"
+        "       %s [--config LEGACY_FILE] [-v] [COMMAND ...]\n"
         "       %s --generate-psk FILE\n"
+        "\n"
+        "  -c FILE   read the role-specific application configuration\n"
+        "  -v        enable verbose logging\n"
+        "  -h        show this help\n"
+        "Long aliases: --app-config FILE, --verbose, --help.\n"
+        "Optional legacy override: --management-config LEGACY_FILE (with -c).\n"
+        "Place startup options before COMMAND.\n"
         "\n"
         "Without COMMAND, ipsec_app starts an interactive CLI session.\n"
         "The application connects to charon before accepting commands.\n"
@@ -239,79 +242,6 @@ static void PrintNativeAppHelp(void)
         "Packet files are diagnostics, not a continuous forwarder.\n");
 }
 
-static bool ParseNativeAppStartupOptions(
-    int32_t iArgumentCount,
-    char **ppcArguments,
-    NativeAppStartupOptions_t *pOptions)
-{
-    int32_t iIndex = 1;
-    bool bParsed = true;
-
-    (void)memset(pOptions, 0, sizeof(*pOptions));
-    pOptions->iCommandIndex = iArgumentCount;
-    while ((iIndex < iArgumentCount) && bParsed) {
-        const char *pcArgument = ppcArguments[iIndex];
-
-        if (NULL == pcArgument) {
-            return false;
-        }
-        if (0 == strcmp("--config", pcArgument)) {
-            if ((iIndex + 1) < iArgumentCount) {
-                iIndex++;
-                pOptions->pcConfigPath = ppcArguments[iIndex];
-                iIndex++;
-            }
-            else {
-                bParsed = false;
-            }
-        }
-        else if (0 == strcmp("--app-config", pcArgument)) {
-            if ((iIndex + 1) < iArgumentCount) {
-                iIndex++;
-                pOptions->pcApplicationConfigPath = ppcArguments[iIndex];
-                iIndex++;
-            }
-            else {
-                bParsed = false;
-            }
-        }
-        else if (0 == strcmp("--management-config", pcArgument)) {
-            if ((iIndex + 1) < iArgumentCount) {
-                iIndex++;
-                pOptions->pcManagementConfigPath = ppcArguments[iIndex];
-                iIndex++;
-            }
-            else {
-                bParsed = false;
-            }
-        }
-        else if (0 == strcmp("--generate-psk", pcArgument)) {
-            if ((iIndex + 1) < iArgumentCount) {
-                iIndex++;
-                pOptions->pcGeneratePskPath = ppcArguments[iIndex];
-                iIndex++;
-            }
-            else {
-                bParsed = false;
-            }
-        }
-        else if (0 == strcmp("--verbose", pcArgument)) {
-            pOptions->bVerbose = true;
-            iIndex++;
-        }
-        else if ((0 == strcmp("--help", pcArgument)) ||
-                 (0 == strcmp("-h", pcArgument))) {
-            pOptions->bHelp = true;
-            iIndex++;
-        }
-        else {
-            pOptions->iCommandIndex = iIndex;
-            break;
-        }
-    }
-    return bParsed;
-}
-
 static bool CopyNativeAppSessionText(
     char *pcDestination,
     uint32_t uiDestinationLength,
@@ -357,6 +287,7 @@ static IpsecError_t RebuildNativeAppRuntime(NativeAppSession_t *pSession)
     IpsecError_t eError;
 
     pSession->Config.pOwnedResources = &pSession->OwnedResources;
+    pSession->Config.pDiagnosticLog = &pSession->DiagnosticLog;
     if (!AreNativeAppContextSettingsEqual(&pSession->Config, &pSession->ContextConfig)) {
         (void)fprintf(stderr, "context settings differ; restart with the intended application config\n");
         pSession->bConfigValid = false;
@@ -386,6 +317,7 @@ static IpsecError_t RebuildNativeAppRuntime(NativeAppSession_t *pSession)
 static IpsecError_t RequireNativeAppConfig(NativeAppSession_t *pSession)
 {
     pSession->Config.pOwnedResources = &pSession->OwnedResources;
+    pSession->Config.pDiagnosticLog = &pSession->DiagnosticLog;
     if (pSession->bConfigValid) {
         return IPSEC_OK;
     }
@@ -1020,6 +952,7 @@ static IpsecError_t LoadNativeAppSessionConfig(
     }
     else if (IPSEC_OK == eError) {
         Config.pOwnedResources = &pSession->OwnedResources;
+        Config.pDiagnosticLog = &pSession->DiagnosticLog;
         pSession->Config = Config;
         pSession->BaseConfig = Config;
         pSession->acApplicationConfigPath[0] = '\0';
@@ -2411,6 +2344,15 @@ static IpsecError_t InitializeNativeAppSession(
         pSession->bOutputMutexInitialized = true;
         eError = InitializeNativeAppPeerTable(&pSession->PeerTable);
     }
+    if (IPSEC_OK == eError) {
+        eError = InitializeNativeAppDiagnosticLog(&pSession->DiagnosticLog);
+        if (IPSEC_OK != eError) {
+            DeinitializeNativeAppPeerTable(&pSession->PeerTable);
+        }
+        else {
+            /* Diagnostic logging is ready for any subsequently opened case. */
+        }
+    }
     if (IPSEC_OK != eError) {
         (void)pthread_mutex_destroy(&pSession->OutputMutex);
         pSession->bOutputMutexInitialized = false;
@@ -2432,6 +2374,7 @@ static void DeinitializeNativeAppSession(NativeAppSession_t *pSession)
         else {
             /* No VICI context was opened. */
         }
+        DeinitializeNativeAppDiagnosticLog(&pSession->DiagnosticLog);
         DeinitializeNativeAppPeerTable(&pSession->PeerTable);
         if (pSession->bOutputMutexInitialized) {
             (void)pthread_mutex_destroy(&pSession->OutputMutex);
@@ -2576,6 +2519,8 @@ int32_t RunNativeAppCli(
     else {
         Session.Config.pOwnedResources = &Session.OwnedResources;
         Session.BaseConfig.pOwnedResources = &Session.OwnedResources;
+        Session.Config.pDiagnosticLog = &Session.DiagnosticLog;
+        Session.BaseConfig.pDiagnosticLog = &Session.DiagnosticLog;
         Session.ContextConfig = Session.Config;
         if ((IPSEC_PACKET_PATH_APPLICATION == Session.Config.Datapath.eProtectedPacketPath) &&
             (Options.iCommandIndex < iArgumentCount)) {

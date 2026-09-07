@@ -256,6 +256,18 @@ running and expose VICI. The library never starts or stops it.
 
 ## Diagnostic application
 
+From `app/`, use `-c` for the role-specific configuration and `-v` for verbose
+logging (put startup options before any one-shot command):
+
+```sh
+sudo ./bin/x86_64/ipsec_app -c ./config/initiator.conf -v
+sudo ./bin/x86_64/ipsec_app -c ./config/responder.conf -v
+```
+
+Use the appropriate command on each PC and save the edited role-specific
+example as that `.conf` file first. `--app-config` and `--verbose` remain
+compatibility aliases; `--config` retains the legacy combined-config behavior.
+
 Role-specific example files are under `app/config/`. Each file contains both
 application defaults and the current algorithm policy. The optional
 `management.conf` input remains a legacy override. New packet-path keys are:
@@ -428,7 +440,8 @@ proof of IPsec success. Unsupported proposals retain their existing classificati
 
 Existing dated result directories and `results.json` are retained (schema 9).
 Each executed packet stage adds `application_packet.log` (elapsed time, stage,
-error and packet metadata) and `packet_evidence.csv` (one row per attempted
+error and packet metadata), `library_packet.log` (bounded protected-TUN packet
+classification metadata), and `packet_evidence.csv` (one row per attempted
 direction/probe). JSON `application_packet_test` includes the same packet evidence and the
 expected inbound/outbound SPI from the selected CHILD SA. Captured/relayed raw ESP
 must have valid IPv4 framing and the expected SPI; this header check is not an
@@ -436,7 +449,12 @@ independent cryptographic check. Charon remains responsible for authentication
 and decryption. The local post-decrypt packet must match the expected IP/UDP
 addresses, ports, nonce, sequence and all 128 payload bytes.
 
-The console, run log, per-case `app.log`, `result_summary.txt` and packet log show
+The library-owned protected TUN disables IPv6 before it is brought up so that
+locally generated IPv6 control traffic is not confused with captured IPv4 RAW
+ESP traffic. `library_packet.log` never stores packet payloads, PSKs, or private
+key material.
+
+The console, run log, per-case `application.log`, `result_summary.txt` and packet log show
 `ESP_CAPTURE`, `ESP_SUBMIT`, `PLAIN_DELIVERY`, `PAYLOAD_MATCH` and an overall
 `proof`. Each check reports PASS/FAIL/NOT_RUN and successes out of two packets.
 NOT_RUN means the stage was never attempted (for example after negotiation

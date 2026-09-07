@@ -460,14 +460,35 @@ static IpsecError_t ReceiveApplicationProtectedPacket(IpsecContext_t *pContext,
     IpsecProtectedPacket_t *pPacket, uint32_t uiTimeoutMs)
 {
     IpsecError_t eError;
+    const uint64_t ullDeadline = GetIpsecMonotonicMilliseconds() + uiTimeoutMs;
+    uint32_t uiSkipped = 0U;
     if (NULL == pPacket->pucData) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     if (pPacket->zCapacity < IPSEC_PROTECTED_PACKET_CAPACITY) {
         return IPSEC_ERR_BUFFER_TOO_SMALL;
     }
-    eError = ReceiveIpsecProtectedApplicationPacket(
-        pContext->pProtectedApplicationState, pPacket, uiTimeoutMs);
+    do {
+        uint64_t ullNow = GetIpsecMonotonicMilliseconds();
+        uint32_t uiRemaining = (ullNow < ullDeadline) ?
+            (uint32_t)(ullDeadline - ullNow) : 0U;
+        eError = ReceiveIpsecProtectedApplicationPacket(
+            pContext->pProtectedApplicationState, pPacket, uiRemaining);
+        if ((IPSEC_OK != eError) ||
+            !IsIpsecProtectedTunControlPacket(pPacket->pucData, pPacket->zLength)) {
+            break;
+        }
+        uiSkipped++;
+        if (uiSkipped <= 4U) {
+            LogIpsec(pContext, IPSEC_LOG_WARNING,
+                "protected TUN control skipped: class=ipv6_link_control "
+                "bytes=%zu first=0x%02x next_header=%u skipped=%u",
+                pPacket->zLength, pPacket->pucData[0], pPacket->pucData[6], uiSkipped);
+        }
+        pPacket->zLength = 0U;
+        eError = IPSEC_ERR_PACKET_TIMEOUT;
+        /* A stream of control packets must not extend the caller's deadline. */
+    } while (GetIpsecMonotonicMilliseconds() < ullDeadline);
     if (IPSEC_OK == eError) {
         pPacket->eType = IPSEC_PROTECTED_PACKET_RAW_ESP;
         pPacket->eDirection = IPSEC_PACKET_DIRECTION_OUTBOUND;
@@ -477,7 +498,8 @@ static IpsecError_t ReceiveApplicationProtectedPacket(IpsecContext_t *pContext,
             /* Header metadata only: never dump payload or keys into logs. */
             LogIpsec(pContext, IPSEC_LOG_WARNING,
                 "protected TUN packet rejected: bytes=%zu first=0x%02x "
-                "byte9=%u flags_fragment=0x%04x bytes12_13=0x%04x error=%s",
+                "byte9=%u flags_fragment=0x%04x bytes12_13=0x%04x "
+                "class=%s version=%u next_header=%u skipped=%u error=%s",
                 pPacket->zLength,
                 (pPacket->zLength > 0U) ? pPacket->pucData[0] : 0U,
                 (pPacket->zLength > 9U) ? pPacket->pucData[9] : 0U,
@@ -485,8 +507,20 @@ static IpsecError_t ReceiveApplicationProtectedPacket(IpsecContext_t *pContext,
                     ((uint32_t)pPacket->pucData[6] << 8U) | pPacket->pucData[7] : 0U,
                 (pPacket->zLength > 13U) ?
                     ((uint32_t)pPacket->pucData[12] << 8U) | pPacket->pucData[13] : 0U,
+                ((pPacket->zLength > 9U) && (4U == (pPacket->pucData[0] >> 4U)) &&
+                    (50U == pPacket->pucData[9])) ? "invalid_or_out_of_scope_esp" :
+                    "unsupported_or_malformed",
+                (pPacket->zLength > 0U) ? pPacket->pucData[0] >> 4U : 0U,
+                (pPacket->zLength > 6U) ? pPacket->pucData[6] : 0U,
+                uiSkipped,
                 GetIpsecErrorString(eError));
         }
+    }
+    if (0U != uiSkipped) {
+        LogIpsec(pContext, IPSEC_LOG_WARNING,
+            "protected TUN receive summary: skipped_control=%u esp_delivered=%u error=%s",
+            uiSkipped, (IPSEC_OK == eError) ? 1U : 0U,
+            (IPSEC_OK == eError) ? "none" : GetIpsecErrorString(eError));
     }
     if (IPSEC_OK != eError) {
         pPacket->zLength = 0U;

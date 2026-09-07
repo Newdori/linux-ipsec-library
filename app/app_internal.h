@@ -8,6 +8,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #define NATIVE_APP_PATH_LENGTH             512U
 #define NATIVE_APP_PROPOSAL_TEXT_LENGTH   1024U
@@ -36,6 +37,16 @@
 #define NATIVE_APP_CONNECTION_PREFIX        "conn-"
 #define NATIVE_APP_CHILD_PREFIX             "child-"
 #define NATIVE_APP_CREDENTIAL_PREFIX        "psk-"
+
+typedef struct NativeAppStartupOptions {
+    const char *pcConfigPath;
+    const char *pcApplicationConfigPath;
+    const char *pcManagementConfigPath;
+    const char *pcGeneratePskPath;
+    int32_t iCommandIndex;
+    bool bVerbose;
+    bool bHelp;
+} NativeAppStartupOptions_t;
 
 typedef enum NativeAppRole {
     NATIVE_APP_ROLE_INITIATOR = 0,
@@ -84,6 +95,21 @@ typedef struct NativeAppOwnedResources {
     bool bClosing;
 } NativeAppOwnedResources_t;
 
+typedef struct NativeAppDiagnosticLog {
+    pthread_mutex_t Mutex;
+    FILE *pFile;
+    bool bInitialized;
+    bool bWriteFailed;
+} NativeAppDiagnosticLog_t;
+
+IpsecError_t InitializeNativeAppDiagnosticLog(NativeAppDiagnosticLog_t *pLog);
+IpsecError_t OpenNativeAppDiagnosticLog(NativeAppDiagnosticLog_t *pLog,
+    const char *pcPath);
+void WriteNativeAppDiagnosticLog(NativeAppDiagnosticLog_t *pLog,
+    IpsecLogLevel_t eLevel, const char *pcMessage);
+IpsecError_t CloseNativeAppDiagnosticLog(NativeAppDiagnosticLog_t *pLog);
+void DeinitializeNativeAppDiagnosticLog(NativeAppDiagnosticLog_t *pLog);
+
 typedef struct NativeAppConfig {
     NativeAppRole_t eRole;
     IpsecDatapathConfig_t Datapath;
@@ -112,6 +138,8 @@ typedef struct NativeAppConfig {
      * App control calls are serialized on the CLI thread. Peer registration
      * copies this pointer but never mutates the ledger. */
     NativeAppOwnedResources_t *pOwnedResources;
+    /* Session-owned diagnostic sink; runtime only, never a config-file key. */
+    NativeAppDiagnosticLog_t *pDiagnosticLog;
 } NativeAppConfig_t;
 
 IpsecError_t InitializeNativeAppOwnedResources(NativeAppOwnedResources_t *pResources);
@@ -732,5 +760,10 @@ bool ParseNativeAppShowOptions(
 int32_t RunNativeAppCli(
     int32_t iArgumentCount,
     char **ppcArguments);
+
+bool ParseNativeAppStartupOptions(
+    int32_t iArgumentCount,
+    char **ppcArguments,
+    NativeAppStartupOptions_t *pOptions);
 
 #endif

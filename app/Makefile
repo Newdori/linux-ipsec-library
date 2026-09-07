@@ -53,6 +53,7 @@ SOURCES = \
 	command.c \
 	config.c \
 	datapath.c \
+	diagnostic_log.c \
 	packet.c \
 	lifecycle.c \
 	shutdown.c \

@@ -116,7 +116,7 @@ endif()
 if(IPSEC_BUILD_APP)
     add_executable(ipsec_app
         ../app/main.c ../app/cli.c ../app/command.c ../app/config.c
-        ../app/datapath.c ../app/packet.c ../app/lifecycle.c ../app/shutdown.c ../app/peer.c
+        ../app/datapath.c ../app/diagnostic_log.c ../app/packet.c ../app/lifecycle.c ../app/shutdown.c ../app/peer.c
         ../app/state.c ../app/show.c ../app/algorithm_capability.c
         ../app/algorithm_catalog.c ../app/algorithm_report.c ../app/algorithm_runner.c
         ../app/algorithm_packet.c ../app/algorithm_packet_codec.c
@@ -265,13 +265,21 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     target_link_libraries(test_algorithm_packet_evidence PRIVATE ipsec_static)
     add_test(NAME test_algorithm_packet_evidence COMMAND test_algorithm_packet_evidence)
     add_executable(test_algorithm_packet_transport ../tests/unit/test_algorithm_packet_transport.c
-        ../app/algorithm_packet.c ../app/algorithm_packet_codec.c ../app/algorithm_packet_evidence.c)
+        ../app/algorithm_packet.c ../app/algorithm_packet_codec.c ../app/algorithm_packet_evidence.c
+        ../app/diagnostic_log.c)
     target_include_directories(test_algorithm_packet_transport PRIVATE ../include ../app)
     target_compile_definitions(test_algorithm_packet_transport PRIVATE _POSIX_C_SOURCE=200809L)
     target_compile_options(test_algorithm_packet_transport PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_link_libraries(test_algorithm_packet_transport PRIVATE ipsec_static Threads::Threads)
     add_test(NAME test_algorithm_packet_transport COMMAND test_algorithm_packet_transport)
     set_tests_properties(test_algorithm_packet_transport PROPERTIES TIMEOUT 10)
+    add_executable(test_app_diagnostic_log ../tests/unit/test_app_diagnostic_log.c
+        ../app/diagnostic_log.c)
+    target_include_directories(test_app_diagnostic_log PRIVATE ../include ../app)
+    target_compile_definitions(test_app_diagnostic_log PRIVATE _POSIX_C_SOURCE=200809L)
+    target_compile_options(test_app_diagnostic_log PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(test_app_diagnostic_log PRIVATE Threads::Threads)
+    add_test(NAME test_app_diagnostic_log COMMAND test_app_diagnostic_log)
     foreach(TestName IN ITEMS test_app_datapath test_app_packet)
         target_include_directories(${TestName} PRIVATE ../include ../app)
         target_compile_definitions(${TestName} PRIVATE _POSIX_C_SOURCE=200809L)

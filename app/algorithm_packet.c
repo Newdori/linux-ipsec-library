@@ -641,6 +641,17 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
         (void)shutdown(iSocket, SHUT_RDWR);
         return IPSEC_ERR_FILE_OPEN;
     }
+    iLength = snprintf(acPath, sizeof(acPath), "%s/library_packet.log", pcDirectory);
+    eError = ((iLength < 0) || ((size_t)iLength >= sizeof(acPath))) ?
+        IPSEC_ERR_BUFFER_TOO_SMALL :
+        OpenNativeAppDiagnosticLog(pConfig->pDiagnosticLog, acPath);
+    if (IPSEC_OK != eError) {
+        pResult->eError = eError;
+        memcpy(pResult->acStage, "diagnostic_open", sizeof("diagnostic_open"));
+        (void)fclose(Session.pLog);
+        (void)shutdown(iSocket, SHUT_RDWR);
+        return eError;
+    }
     (void)fprintf(Session.pLog, "transport=TCP packet_path=APPLICATION case=%s "
         "packets_per_direction=%u\n", pcCaseId, NATIVE_APP_PROBE_COUNT);
     (void)fprintf(Session.pLog, "outer_local=%s outer_remote=%s local_ts=%s remote_ts=%s\n"
@@ -750,6 +761,19 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
         if ((IPSEC_OK != eReport) && (IPSEC_OK == eError)) {
             eError = eReport;
             RecordNativeAppProbeStage(&Session, "evidence_write", eError, 0U);
+        }
+    }
+    {
+        IpsecError_t eDiagnostic =
+            CloseNativeAppDiagnosticLog(pConfig->pDiagnosticLog);
+        if ((IPSEC_OK != eDiagnostic) && (IPSEC_OK == eError)) {
+            eError = eDiagnostic;
+            pResult->eError = eError;
+            memcpy(pResult->acStage, "diagnostic_write",
+                sizeof("diagnostic_write"));
+        }
+        else {
+            /* Preserve the earlier packet-path result. */
         }
     }
     (void)WriteNativeAppPacketEvidenceText(Session.pLog, pResult);

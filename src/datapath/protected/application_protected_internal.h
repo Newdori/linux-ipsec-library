@@ -50,6 +50,9 @@ IpsecError_t ReceiveIpsecProtectedApplicationPacket(
 IpsecError_t SubmitIpsecProtectedApplicationPacket(
     IpsecProtectedApplicationState_t *pState,
     const IpsecProtectedPacket_t *pPacket);
+/* Only well-formed link-local multicast ICMPv6 control traffic is skippable.
+ * This does not relax RAW ESP validation or admit IPv6 ESP. */
+bool IsIpsecProtectedTunControlPacket(const uint8_t *pucData, size_t zLength);
 IpsecError_t InspectIpsecProtectedApplicationFilters(
     const IpsecProtectedApplicationState_t *pState, bool bRequireEmpty);
 IpsecError_t RemoveIpsecProtectedApplicationFilters(
