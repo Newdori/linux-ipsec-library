@@ -211,6 +211,7 @@ static void PrintNativeAppHelp(void)
         "  test algorithm count MODE   show algorithm testcase count\n"
         "  test algorithm check MODE   validate the generated catalog\n"
         "  test algorithm serve [--port N]\n"
+        "                               independent from peer listen port (default 39001 vs 39002)\n"
         "    APPLICATION/APPLICATION: TCP relay with inner IPv4 /32 payload verification\n"
         "                               serve Native peer test requests\n"
         "  test algorithm run MODE [--start N] [--limit N|--all] [--port N]\n"

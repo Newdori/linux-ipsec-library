@@ -2304,6 +2304,7 @@ IpsecError_t RunNativeAppAlgorithmClient(
     uint32_t uiAvailable;
     uint32_t uiRequested;
     uint32_t uiOffset;
+    uint32_t uiControlPort;
     int32_t iSocket = -1;
     IpsecError_t eFirstError = IPSEC_OK;
     IpsecError_t eError;
@@ -2327,6 +2328,8 @@ IpsecError_t RunNativeAppAlgorithmClient(
     uiRequested = (0U == pOptions->uiLimit) ? uiAvailable :
         ((pOptions->uiLimit < uiAvailable) ? pOptions->uiLimit : uiAvailable);
     EffectiveOptions = *pOptions;
+    uiControlPort = (0U == pOptions->uiPort) ?
+        NATIVE_APP_ALGORITHM_DEFAULT_PORT : pOptions->uiPort;
     eError = CreateNativeAppAlgorithmRunId(pOptions->eMode, acRunId,
                                             sizeof(acRunId));
     if (IPSEC_OK == eError) {
@@ -2349,8 +2352,7 @@ IpsecError_t RunNativeAppAlgorithmClient(
     }
     if (IPSEC_OK == eError) {
         eError = InitializeNativeAppAlgorithmEndpoint(
-        pConfig->acLocalAddress, 0U == pOptions->uiPort ?
-        NATIVE_APP_ALGORITHM_DEFAULT_PORT : pOptions->uiPort, &Local);
+        pConfig->acLocalAddress, uiControlPort, &Local);
     }
     if (IPSEC_OK == eError) {
         if (AF_INET == Local.Address.ss_family) {
@@ -2360,19 +2362,11 @@ IpsecError_t RunNativeAppAlgorithmClient(
             ((struct sockaddr_in6 *)&Local.Address)->sin6_port = 0U;
         }
         eError = InitializeNativeAppAlgorithmEndpoint(
-            pConfig->acRemoteAddress, 0U == pOptions->uiPort ?
-            NATIVE_APP_ALGORITHM_DEFAULT_PORT : pOptions->uiPort, &Remote);
+            pConfig->acRemoteAddress, uiControlPort, &Remote);
     }
-    if (IPSEC_OK == eError) {
-        if (IsNativeAppAlgorithmApplication(pConfig)) {
-            eError = OpenNativeAppAlgorithmStream(pConfig,
-                (0U == pOptions->uiPort) ? NATIVE_APP_ALGORITHM_DEFAULT_PORT :
-                pOptions->uiPort, false, &iSocket);
-        }
-        else {
-            eError = OpenNativeAppAlgorithmSocket(
-                &Local, NATIVE_APP_ALGORITHM_POLL_MS, &iSocket);
-        }
+    if ((IPSEC_OK == eError) && !IsNativeAppAlgorithmApplication(pConfig)) {
+        eError = OpenNativeAppAlgorithmSocket(
+            &Local, NATIVE_APP_ALGORITHM_POLL_MS, &iSocket);
     }
     if (IPSEC_OK == eError) {
         eError = CollectNativeAppAlgorithmCapabilities(pContext,
@@ -2427,9 +2421,42 @@ IpsecError_t RunNativeAppAlgorithmClient(
             ReportNativeAppAlgorithm(
                 pLog, stdout, "INFO", "[%" PRIu32 "/%" PRIu32 "] %s",
                 uiOffset + 1U, uiRequested, Result.Case.acId);
-            eError = RunNativeAppAlgorithmCaseClient(
-                pContext, iSocket, &Remote, pConfig, &Capabilities, acRunId,
-                uiRequested, &Result.Case, acCaseDirectory, &Result);
+            if (IsNativeAppAlgorithmApplication(pConfig)) {
+                eError = ConnectNativeAppAlgorithmStream(
+                    pConfig, uiControlPort, &iSocket);
+                if (IPSEC_OK != eError) {
+                    ReportNativeAppAlgorithm(
+                        pLog, stderr, "FAIL",
+                        "test-control TCP connect failed before case=%s: %s",
+                        Result.Case.acId, GetIpsecErrorString(eError));
+                }
+                else {
+                    /* The testcase owns this TCP stream through cleanup. */
+                }
+            }
+            if (IPSEC_OK == eError) {
+                eError = RunNativeAppAlgorithmCaseClient(
+                    pContext, iSocket, &Remote, pConfig, &Capabilities, acRunId,
+                    uiRequested, &Result.Case, acCaseDirectory, &Result);
+                if (IPSEC_ERR_VICI_TRANSPORT == eError) {
+                    ReportNativeAppAlgorithm(
+                        pLog, stderr, "FAIL",
+                        "test-control TCP stream failed during case=%s; failure is isolated to this testcase stream",
+                        Result.Case.acId);
+                }
+                else {
+                    /* Preserve the testcase result. */
+                }
+            }
+            else {
+                Result.eDatapathType = Capabilities.eDatapathType;
+                Result.eResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_SYNC;
+                Result.eError = eError;
+            }
+            if (IsNativeAppAlgorithmApplication(pConfig) && (0 <= iSocket)) {
+                (void)close(iSocket);
+                iSocket = -1;
+            }
         }
         else {
             Result.eResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_CONFIG;
@@ -2534,8 +2561,17 @@ IpsecError_t RunNativeAppAlgorithmClient(
         Writer.uiCaseCount, Writer.uiPassed, Writer.uiUnsupported,
         Writer.uiFailed);
     CloseNativeAppAlgorithmJson(&Writer);
-    eError = FinishNativeAppAlgorithmRun(iSocket, &Remote, acRunId,
-                                         pConfig->uiTimeoutMs);
+    if (IsNativeAppAlgorithmApplication(pConfig)) {
+        eError = ConnectNativeAppAlgorithmStream(
+            pConfig, uiControlPort, &iSocket);
+    }
+    else {
+        eError = IPSEC_OK;
+    }
+    if (IPSEC_OK == eError) {
+        eError = FinishNativeAppAlgorithmRun(iSocket, &Remote, acRunId,
+                                             pConfig->uiTimeoutMs);
+    }
     if ((IPSEC_OK != eError) && (IPSEC_OK == eFirstError)) {
         eFirstError = eError;
     }
@@ -2546,7 +2582,9 @@ IpsecError_t RunNativeAppAlgorithmClient(
     (void)WriteNativeAppAlgorithmRunReport(
         pContext, pConfig, pOptions->eMode, "initiator",
         acResultDirectory, uiRequested, true);
-    (void)close(iSocket);
+    if (0 <= iSocket) {
+        (void)close(iSocket);
+    }
     (void)fclose(pLog);
     return eFirstError;
 }
@@ -2932,6 +2970,7 @@ IpsecError_t RunNativeAppAlgorithmServer(
     uint32_t uiRunCaseOrdinal = 0U;
     NativeAppAlgorithmMode_t eRunMode = NATIVE_APP_ALGORITHM_CUSTOM;
     int32_t iSocket = -1;
+    int32_t iListener = -1;
     bool bRunCompleted = false;
     IpsecError_t eError;
 
@@ -2956,7 +2995,8 @@ IpsecError_t RunNativeAppAlgorithmServer(
     }
     if (IPSEC_OK == eError) {
         if (IsNativeAppAlgorithmApplication(pConfig)) {
-            eError = OpenNativeAppAlgorithmStream(pConfig, uiPort, true, &iSocket);
+            eError = OpenNativeAppAlgorithmListener(
+                pConfig, uiPort, &iListener);
         }
         else {
             eError = OpenNativeAppAlgorithmSocket(
@@ -2974,6 +3014,9 @@ IpsecError_t RunNativeAppAlgorithmServer(
         if (0 <= iSocket) {
             (void)close(iSocket);
         }
+        if (0 <= iListener) {
+            (void)close(iListener);
+        }
         return eError;
     }
 
@@ -2989,6 +3032,23 @@ IpsecError_t RunNativeAppAlgorithmServer(
         NativeAppAlgorithmEndpoint_t Sender;
         NativeAppAlgorithmCase_t Case = {0};
 
+        if (IsNativeAppAlgorithmApplication(pConfig) && (0 > iSocket)) {
+            eError = AcceptNativeAppAlgorithmStream(
+                pConfig, iListener, &iSocket);
+            if (IPSEC_ERR_CANCELLED == eError) {
+                break;
+            }
+            else if (IPSEC_OK != eError) {
+                ReportNativeAppAlgorithm(
+                    pLog, stderr, "FAIL",
+                    "algorithm responder accept failed: %s",
+                    GetIpsecErrorString(eError));
+                break;
+            }
+            else {
+                /* Each APPLICATION testcase uses a fresh TCP stream. */
+            }
+        }
         eError = ReceiveNativeAppAlgorithmMessage(
             iSocket, &Peer, acMessage, sizeof(acMessage), &Sender);
         if (IPSEC_ERR_VICI_TIMEOUT == eError) {
@@ -3000,7 +3060,19 @@ IpsecError_t RunNativeAppAlgorithmServer(
             continue;
         }
         else if (IPSEC_OK != eError) {
-            break;
+            if (IsNativeAppAlgorithmApplication(pConfig)) {
+                ReportNativeAppAlgorithm(
+                    pLog, stderr, "WARN",
+                    "algorithm TCP testcase stream disconnected before a request: %s; waiting for reconnect",
+                    GetIpsecErrorString(eError));
+                (void)close(iSocket);
+                iSocket = -1;
+                eError = IPSEC_OK;
+                continue;
+            }
+            else {
+                break;
+            }
         }
         if (!SplitNativeAppAlgorithmMessage(
                 acMessage, pacFields, NATIVE_APP_ARRAY_COUNT(pacFields),
@@ -3158,8 +3230,17 @@ IpsecError_t RunNativeAppAlgorithmServer(
                 GetIpsecErrorString(eError));
             eError = IPSEC_OK;
         }
+        if (IsNativeAppAlgorithmApplication(pConfig) && (0 <= iSocket)) {
+            (void)close(iSocket);
+            iSocket = -1;
+        }
     }
-    (void)close(iSocket);
+    if (0 <= iSocket) {
+        (void)close(iSocket);
+    }
+    if (0 <= iListener) {
+        (void)close(iListener);
+    }
     if (NULL != pLog) {
         (void)fclose(pLog);
     }

@@ -429,8 +429,12 @@ Prerequisites on **both** PCs:
 - With local host probes, use `plain_netfilter_hook=input`. FORWARD remains for
   separate routed-network diagnostics.
 - TCP `39001` reachable between outer addresses (`--port` overrides it). In
-  APPLICATION mode **both test control and ESP relay use this TCP connection**;
+  APPLICATION mode, test control and ESP relay share one TCP connection per
+  testcase. The responder keeps its listener open for the complete run and each
+  testcase uses a fresh connection so a stale stream cannot stop the matrix.
   UDP test control is not used. Peer registration remains TCP `39002` by default.
+  The algorithm and peer-registration ports are independent and normally should
+  remain different; `peer listen port` does not have to match `--port`.
 - No other traffic/readers on the tested context/queues. Plain probes use UDP
   port `48150`, constrained to the discovered charon TUN, never ordinary NIC
   fallback. Do not run the manual `packet *-receive` commands at the same time.

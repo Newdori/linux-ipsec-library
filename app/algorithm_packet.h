@@ -14,8 +14,12 @@ _Static_assert(NATIVE_APP_PACKET_EVIDENCE_CAPACITY == NATIVE_APP_PROBE_COUNT * 2
 
 bool IsNativeAppAlgorithmApplication(const NativeAppConfig_t *pConfig);
 IpsecError_t ValidateNativeAppAlgorithmPacketConfig(const NativeAppConfig_t *pConfig);
-IpsecError_t OpenNativeAppAlgorithmStream(const NativeAppConfig_t *pConfig,
-    uint32_t uiPort, bool bServer, int32_t *piSocket);
+IpsecError_t OpenNativeAppAlgorithmListener(const NativeAppConfig_t *pConfig,
+    uint32_t uiPort, int32_t *piListener);
+IpsecError_t AcceptNativeAppAlgorithmStream(const NativeAppConfig_t *pConfig,
+    int32_t iListener, int32_t *piSocket);
+IpsecError_t ConnectNativeAppAlgorithmStream(const NativeAppConfig_t *pConfig,
+    uint32_t uiPort, int32_t *piSocket);
 IpsecError_t SendNativeAppTestFrame(int32_t iSocket, const uint8_t *pucData,
     size_t zLength, uint64_t ullDeadline);
 IpsecError_t ReceiveNativeAppTestFrame(int32_t iSocket, uint8_t *pucData,
