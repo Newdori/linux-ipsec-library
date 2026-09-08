@@ -31,6 +31,8 @@ IpsecError_t ValidateNativeAppTestPlain(const uint8_t *pucData, size_t zLength,
 IpsecError_t InspectNativeAppTestEsp(const uint8_t *pucData, size_t zLength,
     uint32_t uiExpectedSpi, NativeAppPacketEvidence_t *pEvidence);
 bool VerifyNativeAppPacketTestProof(const NativeAppPacketTestResult_t *pResult);
+void ApplyNativeAppPacketFailure(NativeAppAlgorithmCaseResult_t *pResult);
+IpsecError_t GetNativeAppAlgorithmCaseError(const NativeAppAlgorithmCaseResult_t *pResult);
 IpsecError_t WriteNativeAppPacketEvidenceJson(FILE *pFile,
     const NativeAppPacketTestResult_t *pResult);
 IpsecError_t WriteNativeAppPacketEvidenceText(FILE *pFile,

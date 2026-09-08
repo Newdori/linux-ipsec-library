@@ -294,7 +294,8 @@ static void UpdateNativeAppAlgorithmFailureMetadata(
     if (NULL == pResult) {
         return;
     }
-    bPeerFailure = pResult->bPeerCaseKnown &&
+    ApplyNativeAppPacketFailure(pResult);
+    bPeerFailure = (IPSEC_OK == pResult->eError) && pResult->bPeerCaseKnown &&
         (NATIVE_APP_ALGORITHM_RESULT_PASS != pResult->ePeerCaseResult) &&
         (pResult->eResult == pResult->ePeerCaseResult);
     if (bPeerFailure) {
@@ -1665,7 +1666,7 @@ static IpsecError_t AppendNativeAppAlgorithmJson(
         pFile, GetNativeAppAlgorithmErrorText(pResult->eError));
     (void)fputs(", \"error\": ", pFile);
     WriteNativeAppJsonString(
-        pFile, GetNativeAppAlgorithmErrorText(pResult->eError));
+        pFile, GetNativeAppAlgorithmErrorText(GetNativeAppAlgorithmCaseError(pResult)));
     (void)fputs(", \"peer_error\": ", pFile);
     WriteNativeAppJsonString(
         pFile, pResult->bPeerCaseKnown ?

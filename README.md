@@ -133,6 +133,18 @@ installs a peer filter pair, connection unload removes it, and failed loads are
 rolled back. Stop traffic and terminate affected SAs before context destruction;
 cleanup retries removal of every registered peer filter.
 
+Before bringing its own TUN UP, the library disables IPv6 on that endpoint and
+sets its IPv4 `rp_filter=2` (loose reverse-path validation), then reads it back.
+ESP reinjected through the TUN has a source normally reached through the physical
+NIC; strict reverse-path filtering may drop it before charon receives it. Only
+the exclusively created, non-persistent TUN is changed. Global `all`/`default`,
+the physical NIC, charon's TUN, routes and firewall rules are not modified.
+Failure to configure/verify the setting fails initialization and cleans up the
+owned endpoint. Path-status queries also reject effective strict filtering
+(`max(all, interface)=1`) if another actor changes it later. Loose validation
+still requires a reverse route; it is not an authentication or firewall bypass.
+The per-device setting disappears with the owned TUN on normal teardown.
+
 This first implementation is IPv4 raw ESP only. NAT-T/UDP-encapsulated ESP,
 fragmented outer IPv4 and hardware-offloaded XFRM SAs are rejected. One context
 supports up to 256 connection-scoped peers. kernel-libipsec protected delivery
@@ -437,6 +449,27 @@ compares the full decrypted IPv4/UDP framing and payload from
 or unrelated packets. PASS requires both directions to verify **and** the
 existing IKE/CHILD/install/counter checks to succeed. TCP delivery alone is not
 proof of IPsec success. Unsupported proposals retain their existing classification.
+
+The CLI prints each blocking packet stage and its remaining case data timeout
+(control acknowledgements have a separate bounded 5-second grace). In
+`application_packet.log`, `protected_relay_send` records the TCP send separately
+from peer plaintext verification. `protected_submit` success means the complete
+packet was written to the protected TUN, **not** that charon authenticated or
+decrypted it. The log also records before/after `rp_filter` values, TUN RX/drop
+counters, NFQUEUE queue metadata and bounded IPv4 statistics. These counters
+are host/namespace diagnostics, not exclusive per-test traffic proof.
+Expected INPUT/TUN/inner-address/queue settings are recorded with
+`rule_verified=no`: queue binding does not verify an OS firewall rule.
+No plaintext, ESP contents, PSK or derived keys are dumped.
+
+For a `plain_receive` timeout, compare the post-failure `sa_snapshot.txt`:
+zero inbound CHILD counters warrant checking protected TUN ingress, reverse-path
+filtering, firewall handling and charon ESP/authentication logs first; increased
+inbound counters warrant checking the charon TUN and post-decrypt NFQUEUE path.
+Do not increase the timeout or flush the firewall as a substitute for locating
+the drop. APPLICATION failure reports preserve the first local packet error;
+a peer's echoed ABORT no longer erases it. `application_packet_test.local_error`
+distinguishes local failure from an error received from the peer.
 
 Existing dated result directories and `results.json` are retained (schema 9).
 Each executed packet stage adds `application_packet.log` (elapsed time, stage,

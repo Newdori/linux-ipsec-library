@@ -140,6 +140,7 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
             test_route_netlink
             test_tun_discovery
             test_protected_filter
+            test_protected_tun
             test_plain_netfilter
             test_psk_generate)
         add_executable(${TestName}

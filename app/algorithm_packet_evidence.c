@@ -3,6 +3,37 @@
 #include <inttypes.h>
 #include <string.h>
 
+IpsecError_t GetNativeAppAlgorithmCaseError(const NativeAppAlgorithmCaseResult_t *pResult)
+{
+    if (NULL == pResult) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    if (IPSEC_OK != pResult->eError) {
+        return pResult->eError;
+    }
+    if (IPSEC_OK != pResult->eCleanupError) {
+        return pResult->eCleanupError;
+    }
+    return pResult->bPeerCaseKnown ? pResult->ePeerCaseError : IPSEC_OK;
+}
+
+void ApplyNativeAppPacketFailure(NativeAppAlgorithmCaseResult_t *pResult)
+{
+    if ((NULL == pResult) || !pResult->PacketTest.bAttempted ||
+        (IPSEC_OK == pResult->PacketTest.eError) ||
+        (NATIVE_APP_ALGORITHM_RESULT_FAIL_DATA_PATH != pResult->eResult)) {
+        return;
+    }
+    /* ABORT may echo this host's original failure. Do not let a later peer
+     * acknowledgement or successful cleanup turn that failure into none. */
+    pResult->eError = pResult->PacketTest.eLocalError;
+    if (IPSEC_OK == pResult->PacketTest.eLocalError) {
+        pResult->bPeerCaseKnown = true;
+        pResult->ePeerCaseResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_DATA_PATH;
+        pResult->ePeerCaseError = pResult->PacketTest.eError;
+    }
+}
+
 typedef struct NativeAppPacketChecks {
     uint32_t auiAttempts[4];
     uint32_t auiSuccesses[4];
@@ -106,6 +137,8 @@ IpsecError_t WriteNativeAppPacketEvidenceJson(FILE *pFile,
     WriteNativeAppPacketQuoted(pFile, pResult->acStage);
     (void)fputs(",\"error\":", pFile);
     WriteNativeAppPacketQuoted(pFile, GetNativeAppPacketError(pResult->eError));
+    (void)fputs(",\"local_error\":", pFile);
+    WriteNativeAppPacketQuoted(pFile, GetNativeAppPacketError(pResult->eLocalError));
     (void)fprintf(pFile, ",\"proof\":\"%s\",\"checks\":{",
         !pResult->bAttempted ? "NOT_RUN" :
         (VerifyNativeAppPacketTestProof(pResult) ? "PASS" : "FAIL"));

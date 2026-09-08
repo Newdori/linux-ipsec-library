@@ -26,6 +26,7 @@ static NativeAppPacketTestResult_t BuildTestPacketEvidence(void) {
         if (pPacket->bOutbound) {
             pPacket->bCaptureAttempted = true;
             pPacket->bEspCaptured = true;
+            pPacket->bEspRelayed = true;
             pPacket->bPeerConfirmed = true;
         }
         else {
@@ -84,6 +85,41 @@ static int32_t VerifyTestProofFailures(const NativeAppPacketTestResult_t *pGood)
 
 typedef IpsecError_t (*WriteTestEvidence_t)(FILE *, const NativeAppPacketTestResult_t *);
 
+static int32_t VerifyTestFailureOwnership(void)
+{
+    NativeAppAlgorithmCaseResult_t Result = {0};
+    Result.eResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_DATA_PATH;
+    Result.PacketTest.bAttempted = true;
+    Result.PacketTest.eError = IPSEC_ERR_PACKET_TIMEOUT;
+    Result.PacketTest.eLocalError = IPSEC_ERR_PACKET_TIMEOUT;
+    Result.bPeerCaseKnown = true; /* Initiator echoed the responder timeout. */
+    Result.ePeerCaseResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_DATA_PATH;
+    Result.ePeerCaseError = IPSEC_ERR_PACKET_TIMEOUT;
+    ApplyNativeAppPacketFailure(&Result);
+    CHECK(IPSEC_ERR_PACKET_TIMEOUT == Result.eError);
+    CHECK(IPSEC_ERR_PACKET_TIMEOUT == GetNativeAppAlgorithmCaseError(&Result));
+    /* Initiator only received the responder error; it must not claim a
+     * second local decryption failure. */
+    Result.PacketTest.eLocalError = IPSEC_OK;
+    Result.bPeerCaseKnown = false;
+    ApplyNativeAppPacketFailure(&Result);
+    CHECK(IPSEC_OK == Result.eError);
+    CHECK(Result.bPeerCaseKnown);
+    CHECK(IPSEC_ERR_PACKET_TIMEOUT == Result.ePeerCaseError);
+    CHECK(IPSEC_ERR_PACKET_TIMEOUT == GetNativeAppAlgorithmCaseError(&Result));
+    Result.eResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_CLEANUP;
+    Result.eError = IPSEC_ERR_RESOURCE_CONFLICT;
+    ApplyNativeAppPacketFailure(&Result);
+    CHECK(IPSEC_ERR_RESOURCE_CONFLICT == Result.eError);
+    CHECK(IPSEC_ERR_RESOURCE_CONFLICT == GetNativeAppAlgorithmCaseError(&Result));
+    Result.PacketTest.bAttempted = false; /* SYSTEM path is unchanged. */
+    Result.eResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_DATA_PATH;
+    ApplyNativeAppPacketFailure(&Result);
+    CHECK(IPSEC_ERR_RESOURCE_CONFLICT == Result.eError);
+    ApplyNativeAppPacketFailure(NULL);
+    return 0;
+}
+
 static int32_t VerifyTestReport(WriteTestEvidence_t pWrite,
     const NativeAppPacketTestResult_t *pResult, const char *pcExpected) {
     char acText[8192];
@@ -116,6 +152,7 @@ int main(int32_t iArgc, char **ppcArgv) {
     NativeAppPacketTestResult_t Empty = {0};
     NativeAppPacketTestResult_t Failed = {.bAttempted = true, .eError = IPSEC_ERR_PACKET_TYPE};
     CHECK(VerifyNativeAppPacketTestProof(&Good));
+    CHECK(0 == VerifyTestFailureOwnership());
     CHECK(0 == VerifyTestProofFailures(&Good));
     CHECK(0 == VerifyTestReport(WriteNativeAppPacketEvidenceText, &Good,
         "application_checks ESP_CAPTURE=PASS(2/2) ESP_SUBMIT=PASS(2/2) PLAIN_DELIVERY=PASS(2/2) PAYLOAD_MATCH=PASS(2/2) proof=PASS error=none"));
@@ -127,7 +164,10 @@ int main(int32_t iArgc, char **ppcArgv) {
     CHECK(0 == VerifyTestReport(WriteNativeAppPacketEvidenceJson, &Empty, "\"packets\":[]"));
     CHECK(0 == VerifyTestReport(WriteNativeAppPacketEvidenceJson, &Failed, "\"proof\":\"FAIL\""));
     CHECK(0 == VerifyTestReport(WriteNativeAppPacketEvidenceCsv, &Good,
-        "1,outbound,220,0xc0000002,1,0,1,0,1,0,0,0,1,0"));
+        "1,outbound,220,0xc0000002,1,0,1,1,1,0,0,0,1,0"));
+    Failed.eLocalError = IPSEC_ERR_PACKET_TIMEOUT;
+    CHECK(0 == VerifyTestReport(WriteNativeAppPacketEvidenceJson, &Failed,
+        "\"local_error\":\"packet operation timed out\""));
     memcpy(Good.acStage, "quote\"\\\n", sizeof("quote\"\\\n"));
     CHECK(0 == VerifyTestReport(WriteNativeAppPacketEvidenceJson, &Good, "quote\\\"\\\\\\u000a"));
     if ((2 == iArgc) && (0 == strcmp(ppcArgv[1], "--json"))) {

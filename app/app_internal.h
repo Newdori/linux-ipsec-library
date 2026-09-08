@@ -399,6 +399,8 @@ typedef struct NativeAppPacketTestResult {
     uint32_t uiExpectedOutboundSpi;
     NativeAppPacketEvidence_t aPackets[NATIVE_APP_PACKET_EVIDENCE_CAPACITY];
     IpsecError_t eError;
+    /* First packet failure on this host, not an error echoed by the peer. */
+    IpsecError_t eLocalError;
     char acStage[48];
 } NativeAppPacketTestResult_t;
 

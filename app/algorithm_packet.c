@@ -305,17 +305,21 @@ typedef struct NativeAppProbeSession {
     uint64_t ullDeadline;
     uint64_t ullStarted;
     NativeAppPacketEvidence_t *pEvidence;
+    IpsecPacketPathStatus_t Paths;
     uint8_t aucNonce[16];
 } NativeAppProbeSession_t;
 
 static void RecordNativeAppProbeStage(NativeAppProbeSession_t *pSession,
-    const char *pcStage, IpsecError_t eError, size_t zLength)
+    const char *pcStage, IpsecError_t eError, size_t zLength, bool bPeerError)
 {
     size_t zStageLength = strlen(pcStage);
     if ((IPSEC_OK == pSession->pResult->eError) &&
         (zStageLength < sizeof(pSession->pResult->acStage))) {
         memcpy(pSession->pResult->acStage, pcStage, zStageLength + 1U);
         pSession->pResult->eError = eError;
+        if (!bPeerError) {
+            pSession->pResult->eLocalError = eError;
+        }
     }
     (void)fprintf(pSession->pLog, "elapsed_ms=%" PRIu64 " probe=%" PRIu32
         " direction=%s stage=%s bytes=%zu error=%s errno_snapshot=%d\n",
@@ -345,6 +349,93 @@ static void RecordNativeAppProbeStage(NativeAppProbeSession_t *pSession,
         (void)fprintf(stderr, "APPLICATION packet test: stage=%s error=%s\n",
             pcStage, GetIpsecErrorString(eError));
     }
+}
+
+static void BeginNativeAppProbeWait(NativeAppProbeSession_t *pSession,
+    const char *pcStage)
+{
+    uint64_t ullNow = GetNativeAppPacketTestTime();
+    uint64_t ullRemaining = (ullNow < pSession->ullDeadline) ?
+        pSession->ullDeadline - ullNow : 0U;
+    uint32_t uiProbe = (NULL == pSession->pEvidence) ? 0U :
+        pSession->pEvidence->uiProbeSequence;
+    (void)fprintf(pSession->pLog, "wait_begin probe=%" PRIu32
+        " stage=%s remaining_ms=%" PRIu64 "\n", uiProbe, pcStage, ullRemaining);
+    (void)fflush(pSession->pLog);
+    (void)printf("APPLICATION probe=%" PRIu32 " waiting=%s remaining_ms=%" PRIu64
+        " (Ctrl-C cancels)\n", uiProbe, pcStage, ullRemaining);
+    (void)fflush(stdout);
+}
+
+static void RecordNativeAppProbeProcFile(FILE *pLog, const char *pcPath)
+{
+    char acBuffer[1024];
+    size_t zRead;
+    size_t zTotal = 0U;
+    FILE *pFile = fopen(pcPath, "r");
+    (void)fprintf(pLog, "diagnostic_file=%s\n", pcPath);
+    if (NULL == pFile) {
+        (void)fprintf(pLog, "unavailable errno=%d\n", errno);
+        return;
+    }
+    /* Fixed metadata-only proc/sysfs sources. No packet, PSK or key dump.
+     * Bound collection even on hosts with large queue/counter inventories. */
+    while ((zTotal < 16384U) && (0U != (zRead = fread(acBuffer, 1U,
+        sizeof(acBuffer), pFile)))) {
+        (void)fwrite(acBuffer, 1U, zRead, pLog);
+        zTotal += zRead;
+    }
+    (void)fprintf(pLog, "\ncollection=%s read_error=%d\n",
+        (zTotal >= 16384U) ? "bounded" : "complete", ferror(pFile));
+    (void)fclose(pFile);
+}
+
+static void RecordNativeAppProbeIngressDiagnostics(NativeAppProbeSession_t *pSession,
+    const char *pcPhase)
+{
+    const char *pacInterfaces[2] = {pSession->Paths.acProtectedInterfaceName,
+        pSession->Paths.acPlainInterfaceName};
+    char acPath[256];
+    uint32_t uiIndex;
+    (void)fprintf(pSession->pLog, "ingress_diagnostics phase=%s "
+        "protected_ready=%s plain_queue_bound=%s\n"
+        "expected_nfqueue hook=INPUT interface=%s source=%s destination=%s "
+        "queue=%u rule_verified=no (OS-managed rule; binding is not rule proof)\n"
+        "protected_submit proves TUN write only, not charon reception/decryption; "
+        "compare post-failure sa_snapshot.txt inbound counters\n",
+        pcPhase, pSession->Paths.bProtectedPathReady ? "yes" : "no",
+        pSession->Paths.bPlainPathReady ? "yes" : "no",
+        pSession->Paths.acPlainInterfaceName,
+        pSession->pConfig->acRemoteTrafficSelector,
+        pSession->pConfig->acLocalTrafficSelector, pSession->Paths.usPlainQueueNumber);
+    RecordNativeAppProbeProcFile(pSession->pLog, "/proc/sys/net/ipv4/conf/all/rp_filter");
+    for (uiIndex = 0U; uiIndex < 2U; uiIndex++) {
+        const char *pcName = pacInterfaces[uiIndex];
+        int32_t iLength;
+        if (('\0' == pcName[0]) || (NULL != strchr(pcName, '/')) ||
+            (0 == strcmp(pcName, ".")) || (0 == strcmp(pcName, ".."))) {
+            continue;
+        }
+        iLength = snprintf(acPath, sizeof(acPath),
+            "/proc/sys/net/ipv4/conf/%s/rp_filter", pcName);
+        if ((iLength > 0) && ((size_t)iLength < sizeof(acPath))) {
+            RecordNativeAppProbeProcFile(pSession->pLog, acPath);
+        }
+        iLength = snprintf(acPath, sizeof(acPath),
+            "/sys/class/net/%s/statistics/rx_packets", pcName);
+        if ((iLength > 0) && ((size_t)iLength < sizeof(acPath))) {
+            RecordNativeAppProbeProcFile(pSession->pLog, acPath);
+        }
+        iLength = snprintf(acPath, sizeof(acPath),
+            "/sys/class/net/%s/statistics/rx_dropped", pcName);
+        if ((iLength > 0) && ((size_t)iLength < sizeof(acPath))) {
+            RecordNativeAppProbeProcFile(pSession->pLog, acPath);
+        }
+    }
+    RecordNativeAppProbeProcFile(pSession->pLog, "/proc/net/netfilter/nfnetlink_queue");
+    RecordNativeAppProbeProcFile(pSession->pLog, "/proc/net/snmp");
+    RecordNativeAppProbeProcFile(pSession->pLog, "/proc/net/netstat");
+    (void)fflush(pSession->pLog);
 }
 
 /* Records always carry a status, including local receive/submit failures.
@@ -415,6 +506,7 @@ static IpsecError_t OpenNativeAppProbeUdp(NativeAppProbeSession_t *pSession)
     if (IPSEC_OK == eError) {
         eError = GetIpsecPacketPathStatus(pSession->pContext, &Paths);
     }
+    pSession->Paths = Paths;
     if (IPSEC_OK != eError) {
         return eError;
     }
@@ -452,6 +544,8 @@ static IpsecError_t OpenNativeAppProbeUdp(NativeAppProbeSession_t *pSession)
 static IpsecError_t ReceiveNativeAppProbePacket(NativeAppProbeSession_t *pSession,
     bool bPlain, uint8_t *pucData, size_t *pzLength)
 {
+    BeginNativeAppProbeWait(pSession, bPlain ? "plain_receive" : "protected_receive");
+    *pzLength = 0U;
     while (!IsNativeAppStopRequested()) {
         IpsecError_t eError;
         uint64_t ullNow = GetNativeAppPacketTestTime();
@@ -504,7 +598,7 @@ static IpsecError_t SendNativeAppProbe(NativeAppProbeSession_t *pSession,
     if ((ssize_t)sizeof(aucProbe) != lSent) {
         eStatus = IPSEC_ERR_INTERNAL;
     }
-    RecordNativeAppProbeStage(pSession, "plain_send", eStatus, sizeof(aucProbe));
+    RecordNativeAppProbeStage(pSession, "plain_send", eStatus, sizeof(aucProbe), false);
     if (IPSEC_OK == eStatus) {
         pEvidence->bCaptureAttempted = true;
         eStatus = ReceiveNativeAppProbePacket(pSession, false, aucData, &zLength);
@@ -516,23 +610,27 @@ static IpsecError_t SendNativeAppProbe(NativeAppProbeSession_t *pSession,
         if ((IPSEC_OK == eStatus) && (zLength > NATIVE_APP_RELAY_CAPACITY - 12U)) {
             eStatus = IPSEC_ERR_BUFFER_TOO_SMALL;
         }
-        RecordNativeAppProbeStage(pSession, "protected_receive", eStatus, zLength);
+        RecordNativeAppProbeStage(pSession, "protected_receive", eStatus, zLength, false);
     }
     eError = SendNativeAppProbeRecord(pSession, 'E', ucSequence, eStatus,
         aucData, (IPSEC_OK == eStatus) ? zLength : 0U);
+    pEvidence->bEspRelayed = (IPSEC_OK == eStatus) && (IPSEC_OK == eError);
+    RecordNativeAppProbeStage(pSession, "protected_relay_send", eError,
+        pEvidence->bEspRelayed ? zLength : 0U, false);
     if (IPSEC_OK == eError) {
+        BeginNativeAppProbeWait(pSession, "peer_plain_verify");
         eError = ReceiveNativeAppProbeRecord(pSession, 'A', ucSequence, aucData,
             0U, &zLength, &ePeerStatus);
     }
     if (IPSEC_OK != eError) {
-        RecordNativeAppProbeStage(pSession, "relay_send_ack", eError, 0U);
+        RecordNativeAppProbeStage(pSession, "relay_send_ack", eError, 0U, false);
         return eError;
     }
     if (IPSEC_OK != eStatus) {
         return eStatus;
     }
     pEvidence->bPeerConfirmed = (IPSEC_OK == ePeerStatus);
-    RecordNativeAppProbeStage(pSession, "peer_plain_verify", ePeerStatus, 0U);
+    RecordNativeAppProbeStage(pSession, "peer_plain_verify", ePeerStatus, 0U, true);
     if (IPSEC_OK == ePeerStatus) {
         pSession->pResult->uiSent++;
     }
@@ -554,18 +652,20 @@ static IpsecError_t ReceiveNativeAppProbe(NativeAppProbeSession_t *pSession,
     pSession->pEvidence = pEvidence;
     pEvidence->uiProbeSequence = ucSequence;
     pEvidence->bOutbound = false;
+    BeginNativeAppProbeWait(pSession, "peer_protected_receive");
     IpsecError_t eError = ReceiveNativeAppProbeRecord(pSession, 'E', ucSequence,
         aucData, sizeof(aucData), &zLength, &eStatus);
     if (IPSEC_OK != eError) {
-        RecordNativeAppProbeStage(pSession, "relay_receive", eError, zLength);
+        RecordNativeAppProbeStage(pSession, "relay_receive", eError, zLength, false);
         return eError;
     }
     pEvidence->bEspRelayed = (IPSEC_OK == eStatus);
+    bool bPeerError = (IPSEC_OK != eStatus);
     if (IPSEC_OK == eStatus) {
         eStatus = InspectNativeAppTestEsp(aucData, zLength,
             pSession->pResult->uiExpectedInboundSpi, pEvidence);
     }
-    RecordNativeAppProbeStage(pSession, "peer_protected_receive", eStatus, zLength);
+    RecordNativeAppProbeStage(pSession, "peer_protected_receive", eStatus, zLength, bPeerError);
     if (IPSEC_OK == eStatus) {
         IpsecProtectedPacket_t Packet = {.uiStructSize = sizeof(Packet),
             .pucData = aucData, .zLength = zLength, .zCapacity = sizeof(aucData),
@@ -574,14 +674,14 @@ static IpsecError_t ReceiveNativeAppProbe(NativeAppProbeSession_t *pSession,
         pEvidence->bSubmitAttempted = true;
         eStatus = SubmitIpsecProtectedPacket(pSession->pContext, &Packet);
         pEvidence->bEspSubmitted = (IPSEC_OK == eStatus);
-        RecordNativeAppProbeStage(pSession, "protected_submit", eStatus, zLength);
+        RecordNativeAppProbeStage(pSession, "protected_submit", eStatus, zLength, false);
     }
     if (IPSEC_OK == eStatus) {
         pEvidence->bPlainAttempted = true;
         eStatus = ReceiveNativeAppProbePacket(pSession, true, aucData, &zLength);
         pEvidence->bPlainReceived = (IPSEC_OK == eStatus);
         pEvidence->uiPlainLength = (zLength <= UINT16_MAX) ? (uint32_t)zLength : 0U;
-        RecordNativeAppProbeStage(pSession, "plain_receive", eStatus, zLength);
+        RecordNativeAppProbeStage(pSession, "plain_receive", eStatus, zLength, false);
     }
     if (IPSEC_OK == eStatus) {
         BuildNativeAppTestProbe(aucProbe, pSession->aucNonce, pcCaseId, ucSequence);
@@ -590,13 +690,13 @@ static IpsecError_t ReceiveNativeAppProbe(NativeAppProbeSession_t *pSession,
             (const uint8_t *)&pSession->Remote.sin_addr,
             (const uint8_t *)&pSession->Local.sin_addr, aucProbe);
         pEvidence->bPayloadMatch = (IPSEC_OK == eStatus);
-        RecordNativeAppProbeStage(pSession, "plain_compare", eStatus, zLength);
+        RecordNativeAppProbeStage(pSession, "plain_compare", eStatus, zLength, false);
         if (IPSEC_OK == eStatus) {
             pSession->pResult->uiReceived++;
         }
     }
     eError = SendNativeAppProbeRecord(pSession, 'A', ucSequence, eStatus, NULL, 0U);
-    RecordNativeAppProbeStage(pSession, "relay_ack_send", eError, 0U);
+    RecordNativeAppProbeStage(pSession, "relay_ack_send", eError, 0U, false);
     return (IPSEC_OK == eError) ? eStatus : eError;
 }
 
@@ -615,6 +715,7 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
     IpsecError_t eError;
     uint32_t uiInboundSpi;
     uint32_t uiOutboundSpi;
+    bool bHandshakePeerError = false;
     if ((NULL == pContext) || (NULL == pConfig) || (NULL == pcCaseId) ||
         (NULL == pcDirectory) || (NULL == pResult) || (iSocket < 0)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
@@ -630,6 +731,7 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
     iLength = snprintf(acPath, sizeof(acPath), "%s/application_packet.log", pcDirectory);
     if ((iLength < 0) || ((size_t)iLength >= sizeof(acPath))) {
         pResult->eError = IPSEC_ERR_BUFFER_TOO_SMALL;
+        pResult->eLocalError = pResult->eError;
         memcpy(pResult->acStage, "report_open", sizeof("report_open"));
         (void)shutdown(iSocket, SHUT_RDWR);
         return IPSEC_ERR_BUFFER_TOO_SMALL;
@@ -637,6 +739,7 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
     Session.pLog = fopen(acPath, "wx");
     if (NULL == Session.pLog) {
         pResult->eError = IPSEC_ERR_FILE_OPEN;
+        pResult->eLocalError = pResult->eError;
         memcpy(pResult->acStage, "report_open", sizeof("report_open"));
         (void)shutdown(iSocket, SHUT_RDWR);
         return IPSEC_ERR_FILE_OPEN;
@@ -647,6 +750,7 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
         OpenNativeAppDiagnosticLog(pConfig->pDiagnosticLog, acPath);
     if (IPSEC_OK != eError) {
         pResult->eError = eError;
+        pResult->eLocalError = eError;
         memcpy(pResult->acStage, "diagnostic_open", sizeof("diagnostic_open"));
         (void)fclose(Session.pLog);
         (void)shutdown(iSocket, SHUT_RDWR);
@@ -665,7 +769,9 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
     if (IPSEC_OK == eError) {
         eError = OpenNativeAppProbeUdp(&Session);
     }
-    RecordNativeAppProbeStage(&Session, "preflight_inner_address_tun", eError, 0U);
+    RecordNativeAppProbeStage(&Session, "preflight_inner_address_tun", eError, 0U, false);
+    RecordNativeAppProbeIngressDiagnostics(&Session, "before_packets");
+    BeginNativeAppProbeWait(&Session, "relay_handshake");
     /* Exchange local preparation errors as well as the per-case nonce. */
     if (!bServer) {
         int32_t iRandom = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
@@ -694,6 +800,7 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
                 aucHello, 0U, &zLength, &eStatus);
         }
         if (IPSEC_OK == eError) {
+            bHandshakePeerError = (IPSEC_OK != eStatus);
             eError = eStatus;
         }
     }
@@ -702,22 +809,28 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
         eError = ReceiveNativeAppProbeRecord(&Session, 'H', 0U,
             aucHello, sizeof(aucHello), &zLength, &eStatus);
         if (IPSEC_OK == eError) {
+            bHandshakePeerError = (IPSEC_OK != eStatus);
             if ((sizeof(aucHello) != zLength) ||
                 (NULL == memchr(aucHello, 0, NATIVE_APP_ALGORITHM_CASE_ID_LENGTH)) ||
                 ((IPSEC_OK == eStatus) && (0 != strcmp((char *)aucHello, pcCaseId)))) {
                 eStatus = IPSEC_ERR_VICI_PROTOCOL;
+                bHandshakePeerError = false;
             }
             if (IPSEC_OK != eLocal) {
                 eStatus = eLocal;
+                bHandshakePeerError = false;
             }
             memcpy(Session.aucNonce, aucHello + NATIVE_APP_ALGORITHM_CASE_ID_LENGTH, 16U);
             eError = SendNativeAppProbeRecord(&Session, 'A', 0U, eStatus, NULL, 0U);
             if (IPSEC_OK == eError) {
                 eError = eStatus;
             }
+            else {
+                bHandshakePeerError = false;
+            }
         }
     }
-    RecordNativeAppProbeStage(&Session, "relay_handshake", eError, 0U);
+    RecordNativeAppProbeStage(&Session, "relay_handshake", eError, 0U, bHandshakePeerError);
     for (uiIndex = 0U; (uiIndex < NATIVE_APP_PROBE_COUNT) && (IPSEC_OK == eError);
          uiIndex++) {
         uint8_t ucSequence = (uint8_t)(uiIndex * 2U + 1U);
@@ -731,16 +844,17 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
     if (Session.iUdp >= 0) {
         (void)close(Session.iUdp);
     }
+    RecordNativeAppProbeIngressDiagnostics(&Session, "after_packets");
     Session.pEvidence = NULL;
     if (IPSEC_OK != pResult->eError) {
         eError = pResult->eError; /* Keep the first failed stage and its cause together. */
     }
     if ((IPSEC_OK == eError) && !VerifyNativeAppPacketTestProof(pResult)) {
         eError = IPSEC_ERR_PACKET_INVALID;
-        RecordNativeAppProbeStage(&Session, "proof_incomplete", eError, 0U);
+        RecordNativeAppProbeStage(&Session, "proof_incomplete", eError, 0U, false);
     }
     if (IPSEC_OK == eError) {
-        RecordNativeAppProbeStage(&Session, "complete", IPSEC_OK, 0U);
+        RecordNativeAppProbeStage(&Session, "complete", IPSEC_OK, 0U, false);
     }
     pResult->eError = eError;
     {
@@ -760,7 +874,7 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
         }
         if ((IPSEC_OK != eReport) && (IPSEC_OK == eError)) {
             eError = eReport;
-            RecordNativeAppProbeStage(&Session, "evidence_write", eError, 0U);
+            RecordNativeAppProbeStage(&Session, "evidence_write", eError, 0U, false);
         }
     }
     {
@@ -769,6 +883,7 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
         if ((IPSEC_OK != eDiagnostic) && (IPSEC_OK == eError)) {
             eError = eDiagnostic;
             pResult->eError = eError;
+            pResult->eLocalError = eError;
             memcpy(pResult->acStage, "diagnostic_write",
                 sizeof("diagnostic_write"));
         }
@@ -783,11 +898,13 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
     if ((0 != ferror(Session.pLog)) && (IPSEC_OK == eError)) {
         eError = IPSEC_ERR_FILE_WRITE;
         pResult->eError = eError;
+        pResult->eLocalError = eError;
         memcpy(pResult->acStage, "report_write", sizeof("report_write"));
     }
     if ((0 != fclose(Session.pLog)) && (IPSEC_OK == eError)) {
         eError = IPSEC_ERR_FILE_WRITE;
         pResult->eError = eError;
+        pResult->eLocalError = eError;
         memcpy(pResult->acStage, "report_write", sizeof("report_write"));
     }
     (void)WriteNativeAppPacketEvidenceText(stdout, pResult);

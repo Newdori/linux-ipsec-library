@@ -940,7 +940,7 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             pResult->bPeerCaseKnown ?
                 GetNativeAppAlgorithmErrorText(pResult->ePeerCaseError) :
                 "none",
-            GetNativeAppAlgorithmErrorText(pResult->eError),
+            GetNativeAppAlgorithmErrorText(GetNativeAppAlgorithmCaseError(pResult)),
             GetNativeAppAlgorithmErrorText(pResult->eCleanupError),
             GetNativeAppAlgorithmErrorText(
                 pResult->Cleanup.eTerminateError),
