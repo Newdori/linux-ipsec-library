@@ -214,7 +214,8 @@ static void PrintNativeAppHelp(void)
         "    APPLICATION/APPLICATION: TCP relay with inner IPv4 /32 payload verification\n"
         "                               serve Native peer test requests\n"
         "  test algorithm run MODE [--start N] [--limit N|--all] [--port N]\n"
-        "      [--results FILE] [--delay-ms N] [--stop-on-error]\n"
+        "      [--results FILE] [--delay-ms N] [--stop-on-error|--continue-on-error]\n"
+        "      APPLICATION packet failures stop the run unless --continue-on-error is explicit.\n"
         "      [--ike PROPOSAL --esp PROPOSAL]\n"
         "                               run baseline/exhaustive/custom tests\n"
         "  help                         show this command list\n"
@@ -1743,11 +1744,13 @@ static IpsecError_t ParseNativeAppAlgorithmRunOptions(
         else if (0 == strcmp("--continue-on-error",
                              ppcArguments[uiIndex])) {
             pOptions->bContinueOnError = true;
+            pOptions->bContinueOnDataPathError = true;
             uiIndex++;
         }
         else if (0 == strcmp("--stop-on-error",
                              ppcArguments[uiIndex])) {
             pOptions->bContinueOnError = false;
+            pOptions->bContinueOnDataPathError = false;
             uiIndex++;
         }
         else {

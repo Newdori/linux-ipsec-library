@@ -135,10 +135,20 @@ cleanup retries removal of every registered peer filter.
 
 Before bringing its own TUN UP, the library disables IPv6 on that endpoint and
 sets its IPv4 `rp_filter=2` (loose reverse-path validation), then reads it back.
+It also assigns **127.0.0.1/32, scope host**, only to that private TUN. This
+loopback anchor is not an IKE/ESP endpoint, traffic selector or application
+address and requires no additional config field. Linux source validation can
+still reject loose-RPF ingress on an **unnumbered** interface when the reverse
+route uses the NIC (`fib_validate_source`, `no_addr` branch). The anchor avoids
+that branch without duplicating a physical endpoint or disabling RPF globally.
+The kernel creates a TUN-local host route; it does not create a connected peer
+subnet route. `route_localnet` is not enabled. The address/host route disappear
+with the owned non-persistent TUN. Readiness also verifies the address and /32
+mask; it does not overwrite an unexpected pre-existing address.
 ESP reinjected through the TUN has a source normally reached through the physical
 NIC; strict reverse-path filtering may drop it before charon receives it. Only
 the exclusively created, non-persistent TUN is changed. Global `all`/`default`,
-the physical NIC, charon's TUN, routes and firewall rules are not modified.
+the physical NIC, charon's TUN, peer routes and firewall rules are not modified.
 Failure to configure/verify the setting fails initialization and cleans up the
 owned endpoint. Path-status queries also reject effective strict filtering
 (`max(all, interface)=1`) if another actor changes it later. Loose validation
@@ -441,6 +451,15 @@ test algorithm run exhaustive-ike --all --stop-on-error
 test algorithm run exhaustive-esp --all --stop-on-error
 ```
 
+APPLICATION runs now stop after the first `FAIL_DATA_PATH` packet test by
+default, after saving that case and performing cleanup/control completion.
+This also applies to `--all`: it prevents repeating the same packet timeout for
+every proposal on an unverified path. Use `--continue-on-error` explicitly only
+when intentionally collecting subsequent failures. `--stop-on-error` stops on
+other failures too; SYSTEM and expected-unsupported behavior are unchanged.
+Ctrl-C cleanup queries the actual remaining SAs at least once. An interrupted
+wait with SAs still present reports cancellation, not a fabricated VICI timeout.
+
 For every supported case, the runner sends two 128-byte probe payloads in each
 direction, receives their completed ESP through `ReceiveIpsecProtectedPacket`,
 transfers them over TCP, calls the peer's `SubmitIpsecProtectedPacket`, then
@@ -560,8 +579,21 @@ cmake --build .build/host --parallel
 ctest --test-dir .build/host --output-on-failure
 ```
 
-Set `IPSEC_BUILD_LIVE_TESTS=ON` to compile the privileged one-packet diagnostic
-under `tests/integration`. It is intentionally not registered with CTest.
+Set `IPSEC_BUILD_LIVE_TESTS=ON` to compile the privileged diagnostics under
+`tests/integration`. They are intentionally not registered with CTest.
+The TUN regression test creates its own disposable network namespace before
+changing anything. It reproduces an unnumbered loose-RPF ingress drop, then
+verifies delivery after the real library's host-/32 initialization. It uses UDP
+to isolate Linux ingress, not to claim ESP/charon/NFQUEUE end-to-end validation.
+From the repository root on Linux:
+
+```sh
+cmake -S src -B .build/tun-ingress -DIPSEC_BUILD_LIVE_TESTS=ON -DIPSEC_BUILD_APP=OFF
+cmake --build .build/tun-ingress --target test_live_tun_ingress --parallel
+sudo ./.build/tun-ingress/test_live_tun_ingress
+```
+
+Exit 77 means namespace isolation is unavailable; no host interfaces are changed.
 
 ## Verification scope
 

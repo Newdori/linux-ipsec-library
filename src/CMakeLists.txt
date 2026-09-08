@@ -107,6 +107,9 @@ install(FILES ../include/ipsec.h ../include/ipsec_types.h ../include/ipsec_error
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ipsecctrl)
 
 if(IPSEC_BUILD_LIVE_TESTS)
+    add_executable(test_live_tun_ingress ../tests/integration/test_live_tun_ingress.c)
+    target_link_libraries(test_live_tun_ingress PRIVATE ipsec_static)
+    target_compile_options(test_live_tun_ingress PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_executable(test_live_datapath ../tests/integration/test_live_datapath.c)
     target_compile_definitions(test_live_datapath PRIVATE _POSIX_C_SOURCE=200809L)
     target_link_libraries(test_live_datapath PRIVATE ipsec_static)
@@ -237,6 +240,18 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     target_compile_options(test_app_shutdown PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME test_app_shutdown COMMAND test_app_shutdown)
     set_tests_properties(test_app_shutdown PROPERTIES TIMEOUT 10)
+
+    # Keep the real wait routine with deterministic VICI seams; discard other
+    # lifecycle entry points so production-only app dependencies are not mocked.
+    add_executable(test_app_wait ../tests/unit/test_app_wait.c ../app/lifecycle.c)
+    target_include_directories(test_app_wait PRIVATE ../include ../app)
+    target_compile_definitions(test_app_wait PRIVATE _POSIX_C_SOURCE=200809L)
+    target_compile_options(test_app_wait PRIVATE -Wall -Wextra -Wpedantic -Werror
+        -ffunction-sections -fdata-sections)
+    target_link_options(test_app_wait PRIVATE -Wl,--gc-sections)
+    target_link_libraries(test_app_wait PRIVATE Threads::Threads)
+    add_test(NAME test_app_wait COMMAND test_app_wait)
+    set_tests_properties(test_app_wait PROPERTIES TIMEOUT 10)
 
     add_executable(test_app_command
         ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_app_command.c

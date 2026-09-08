@@ -92,6 +92,9 @@ static int32_t VerifyTestFailureOwnership(void)
     Result.PacketTest.bAttempted = true;
     Result.PacketTest.eError = IPSEC_ERR_PACKET_TIMEOUT;
     Result.PacketTest.eLocalError = IPSEC_ERR_PACKET_TIMEOUT;
+    CHECK(ShouldStopNativeAppPacketFailure(&Result, false));
+    CHECK(!ShouldStopNativeAppPacketFailure(&Result, true));
+    CHECK(!ShouldStopNativeAppPacketFailure(NULL, false));
     Result.bPeerCaseKnown = true; /* Initiator echoed the responder timeout. */
     Result.ePeerCaseResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_DATA_PATH;
     Result.ePeerCaseError = IPSEC_ERR_PACKET_TIMEOUT;
@@ -113,6 +116,14 @@ static int32_t VerifyTestFailureOwnership(void)
     CHECK(IPSEC_ERR_RESOURCE_CONFLICT == Result.eError);
     CHECK(IPSEC_ERR_RESOURCE_CONFLICT == GetNativeAppAlgorithmCaseError(&Result));
     Result.PacketTest.bAttempted = false; /* SYSTEM path is unchanged. */
+    Result.eResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_DATA_PATH;
+    CHECK(!ShouldStopNativeAppPacketFailure(&Result, false));
+    Result.PacketTest.bAttempted = true;
+    Result.eResult = NATIVE_APP_ALGORITHM_RESULT_EXPECTED_NOT_SUPPORTED;
+    CHECK(!ShouldStopNativeAppPacketFailure(&Result, false));
+    Result.eResult = NATIVE_APP_ALGORITHM_RESULT_PASS;
+    CHECK(!ShouldStopNativeAppPacketFailure(&Result, false));
+    Result.PacketTest.bAttempted = false;
     Result.eResult = NATIVE_APP_ALGORITHM_RESULT_FAIL_DATA_PATH;
     ApplyNativeAppPacketFailure(&Result);
     CHECK(IPSEC_ERR_RESOURCE_CONFLICT == Result.eError);
