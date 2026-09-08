@@ -104,6 +104,15 @@ IpsecError_t UnregisterIpsecProtectedPeerInternal(
     IpsecContext_t *pContext,
     const char *pcConnectionName);
 
+IpsecError_t RegisterIpsecPlainPeerInternal(
+    IpsecContext_t *pContext,
+    const IpsecConnectionConfig_t *pConfig,
+    bool *pbAdded);
+
+IpsecError_t UnregisterIpsecPlainPeerInternal(
+    IpsecContext_t *pContext,
+    const char *pcConnectionName);
+
 bool MatchIpsecProtectedPeerInternal(
     IpsecContext_t *pContext,
     const char *pcLocalAddress,

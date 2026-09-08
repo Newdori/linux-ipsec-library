@@ -126,8 +126,8 @@ The implementation reuses the existing scoped TC/TUN mechanism:
 6. the receive API reads the complete packet from the TUN;
 7. the submit API validates and writes the inbound packet to the protected TUN.
 
-The library owns only its TUN and reserved filters. It does not add routes,
-addresses, firewall rules, or qdiscs. The configured TC priority pair and the
+The protected path owns only its TUN and reserved filters. It does not add
+routes, addresses, firewall rules, or qdiscs. The configured TC priority pair and the
 library handle namespace must be reserved for the context. Connection load
 installs a peer filter pair, connection unload removes it, and failed loads are
 rolled back. Stop traffic and terminate affected SAs before context destruction;
@@ -164,14 +164,19 @@ These requirements do not apply to a `SYSTEM` protected path.
 ## Plain APPLICATION implementation
 
 Plain delivery uses raw `NETLINK_NETFILTER`/NFQUEUE without linking a GPL
-netfilter client library. The application selects a nonzero queue number. An
-OS administrator must provision one exact post-decrypt rule before library
-initialization:
+netfilter client library. The application selects a nonzero queue number.
+For the kernel-libipsec backend, the diagnostic application enables
+library-owned rules: a dedicated IPv4 nftables table/base chain is created
+through the Linux Netlink UAPI and one scoped rule is installed for each
+loaded connection:
 
-- XFRM backend: select only inbound packets carrying the matching inbound IPsec
-  policy and enqueue them after successful XFRM decapsulation.
 - kernel-libipsec backend: select only packets entering from the discovered or
-  configured charon-owned TUN and enqueue them.
+  configured charon-owned TUN whose source/destination match that connection's
+  remote/local traffic selectors.
+
+External library users may leave `bManagePlainNetfilterRule=false` and
+provision an equivalent OS-owned rule. XFRM plain-APPLICATION selection remains
+OS-owned because it must additionally match the actual inbound IPsec policy.
 
 Do not configure a queue-bypass/accept fallback for this path. The library
 copies a validated complete IPv4 packet and then sends an `NF_DROP` verdict.
@@ -180,13 +185,12 @@ not also delivered through the Linux stack. Malformed, truncated, wrong-TUN,
 IPv6, and undersized-buffer cases are rejected; queued packets with a usable ID
 are dropped even when parsing fails.
 
-The library deliberately does not create firewall rules. Queue binding proves
-that the local queue endpoint is ready; it cannot prove that an administrator's
-rule selects only authenticated post-decrypt traffic. The rule and network
-namespace are therefore part of the trusted deployment boundary. For XFRM,
-policy selection must be verified in the actual kernel. For kernel-libipsec,
-the library also checks the NFQUEUE ingress ifindex against the selected charon
-TUN.
+The managed kernel-libipsec rule is acknowledged by the kernel before
+`connection load` succeeds and is removed on connection unload/deinit. It uses
+a library-specific table and never invokes `iptables` or `nft`. The application
+must run with the Netfilter administration capability. For an OS-owned rule,
+queue binding alone still does not prove rule selection. The library always
+checks the NFQUEUE ingress ifindex against the selected charon TUN.
 
 Relevant implementation background is documented by the
 [strongSwan kernel-libipsec plugin](https://docs.strongswan.org/docs/latest/plugins/kernelLibipsec.html),
@@ -200,8 +204,8 @@ monitor it operationally.
 The diagnostic application records the expected rule hook as
 `plain_netfilter_hook=input|forward`. Use `input` when the decrypted inner
 destination is local to the host and `forward` when Linux would route it
-through the host. This setting documents and validates deployment intent; it
-does not create, replace, or delete an OS Netfilter rule.
+through the host. In kernel-libipsec APPLICATION mode this selects the hook of
+the library-owned base chain.
 
 ## Datapath configuration
 
@@ -395,7 +399,7 @@ another application's PSK entry. `show credential` displays this non-secret ID.
 No global `clear-creds` is used during automatic shutdown. The existing explicit
 `credential clear all` command remains a daemon-wide operator action.
 
-PSK/config files, results/logs, OS addresses/routes/NFQUEUE rules, charon's TUN
+PSK/config files, results/logs, OS addresses/routes, charon's TUN
 and service, and other applications' resources are preserved. Protected
 APPLICATION retains a conservative final **all-SA** guard because removing
 diversion can affect a shared egress interface: foreign remaining SAs are listed
@@ -413,17 +417,17 @@ Prerequisites on **both** PCs:
 
 - `datapath_backend=kernel-libipsec`, `ipsec_mode=tunnel`, and both
   `protected_packet_path=application` and `plain_packet_path=application`.
-- Working raw IPv4 ESP (no NAT-T), protected TC path, and post-decrypt NFQUEUE
-  rules. The test does not install firewall rules or change OS addresses/routes.
+- Working raw IPv4 ESP (no NAT-T) and protected TC path. The library installs
+  its own scoped post-decrypt nftables/NFQUEUE rules through Netlink; it does
+  not change OS addresses/routes or execute firewall commands.
 - Distinct single inner IPv4 host selectors, for example PC-A
   `local_ts=172.16.10.1/32` and PC-B `local_ts=172.16.20.1/32`. Each local inner
   address must actually be assigned to its own PC (e.g. on `lo`). Peer registration
   exchanges the remote selector. Neither inner address may equal either outer
   endpoint. The library still supports broader selectors; this automatic probe
   intentionally requires a single host per side to avoid guessing probe sources.
-- With local host probes, use `plain_netfilter_hook=input` and the corresponding
-  INPUT NFQUEUE rule for remote inner source -> local inner destination on the
-  actual charon TUN. FORWARD tests remain separate routed-network diagnostics.
+- With local host probes, use `plain_netfilter_hook=input`. FORWARD remains for
+  separate routed-network diagnostics.
 - TCP `39001` reachable between outer addresses (`--port` overrides it). In
   APPLICATION mode **both test control and ESP relay use this TCP connection**;
   UDP test control is not used. Peer registration remains TCP `39002` by default.
@@ -454,8 +458,10 @@ test algorithm run exhaustive-esp --all --stop-on-error
 APPLICATION runs now stop after the first `FAIL_DATA_PATH` packet test by
 default, after saving that case and performing cleanup/control completion.
 This also applies to `--all`: it prevents repeating the same packet timeout for
-every proposal on an unverified path. Use `--continue-on-error` explicitly only
-when intentionally collecting subsequent failures. `--stop-on-error` stops on
+every proposal on an unverified path. Use `--continue-on-data-path-error`
+explicitly only when intentionally collecting subsequent packet-path failures.
+`--continue-on-error` continues negotiation/control failures but does not bypass
+this data-path circuit breaker. `--stop-on-error` stops on
 other failures too; SYSTEM and expected-unsupported behavior are unchanged.
 Ctrl-C cleanup queries the actual remaining SAs at least once. An interrupted
 wait with SAs still present reports cancellation, not a fabricated VICI timeout.
@@ -477,8 +483,9 @@ packet was written to the protected TUN, **not** that charon authenticated or
 decrypted it. The log also records before/after `rp_filter` values, TUN RX/drop
 counters, NFQUEUE queue metadata and bounded IPv4 statistics. These counters
 are host/namespace diagnostics, not exclusive per-test traffic proof.
-Expected INPUT/TUN/inner-address/queue settings are recorded with
-`rule_verified=no`: queue binding does not verify an OS firewall rule.
+Expected INPUT/TUN/inner-address/queue settings record whether the rule is
+library-owned and kernel-acknowledged. For OS-owned mode, queue binding still
+does not verify an administrator-provisioned firewall rule.
 No plaintext, ESP contents, PSK or derived keys are dumped.
 
 For a `plain_receive` timeout, compare the post-failure `sa_snapshot.txt`:

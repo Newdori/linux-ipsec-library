@@ -8,6 +8,7 @@
 #define NATIVE_APP_PROBE_LENGTH 128U
 #define NATIVE_APP_PROBE_PORT 48150U
 #define NATIVE_APP_PROBE_COUNT 2U
+#define NATIVE_APP_PACKET_TEST_TIMEOUT_MS 10000U
 _Static_assert(NATIVE_APP_PACKET_EVIDENCE_CAPACITY == NATIVE_APP_PROBE_COUNT * 2U,
     "packet evidence must cover both probe directions");
 

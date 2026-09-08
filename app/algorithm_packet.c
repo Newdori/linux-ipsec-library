@@ -175,7 +175,8 @@ IpsecError_t ValidateNativeAppAlgorithmPacketConfig(const NativeAppConfig_t *pCo
         return IPSEC_OK;
     }
     if ((IPSEC_MODE_TUNNEL != pConfig->eMode) ||
-        (NATIVE_APP_PLAIN_NETFILTER_INPUT != pConfig->ePlainNetfilterHook) ||
+        (IPSEC_PLAIN_NETFILTER_INPUT !=
+         pConfig->Datapath.ePlainNetfilterHook) ||
         !ParseNativeAppTestAddress(pConfig->acLocalAddress, &Local, false) ||
         !ParseNativeAppTestAddress(pConfig->acRemoteAddress, &Remote, false) ||
         !ParseNativeAppTestAddress(pConfig->acLocalTrafficSelector, &LocalTs, true) ||
@@ -399,15 +400,22 @@ static void RecordNativeAppProbeIngressDiagnostics(NativeAppProbeSession_t *pSes
     uint32_t uiIndex;
     (void)fprintf(pSession->pLog, "ingress_diagnostics phase=%s "
         "protected_ready=%s plain_queue_bound=%s\n"
-        "expected_nfqueue hook=INPUT interface=%s source=%s destination=%s "
-        "queue=%u rule_verified=no (OS-managed rule; binding is not rule proof)\n"
+        "expected_nfqueue hook=%s interface=%s source=%s destination=%s "
+        "queue=%u rule_install_ack=%s owner=%s\n"
         "protected_submit proves TUN write only, not charon reception/decryption; "
         "compare post-failure sa_snapshot.txt inbound counters\n",
         pcPhase, pSession->Paths.bProtectedPathReady ? "yes" : "no",
         pSession->Paths.bPlainPathReady ? "yes" : "no",
+        (IPSEC_PLAIN_NETFILTER_FORWARD ==
+         pSession->pConfig->Datapath.ePlainNetfilterHook) ?
+            "FORWARD" : "INPUT",
         pSession->Paths.acPlainInterfaceName,
         pSession->pConfig->acRemoteTrafficSelector,
-        pSession->pConfig->acLocalTrafficSelector, pSession->Paths.usPlainQueueNumber);
+        pSession->pConfig->acLocalTrafficSelector,
+        pSession->Paths.usPlainQueueNumber,
+        pSession->pConfig->Datapath.bManagePlainNetfilterRule ? "yes" : "no",
+        pSession->pConfig->Datapath.bManagePlainNetfilterRule ?
+            "library" : "OS");
     RecordNativeAppProbeProcFile(pSession->pLog, "/proc/sys/net/ipv4/conf/all/rp_filter");
     for (uiIndex = 0U; uiIndex < 2U; uiIndex++) {
         const char *pcName = pacInterfaces[uiIndex];
@@ -727,7 +735,9 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
     pResult->uiExpectedInboundSpi = uiInboundSpi;
     pResult->uiExpectedOutboundSpi = uiOutboundSpi;
     Session.ullStarted = GetNativeAppPacketTestTime();
-    Session.ullDeadline = Session.ullStarted + pConfig->uiTimeoutMs;
+    Session.ullDeadline = Session.ullStarted +
+        ((pConfig->uiTimeoutMs < NATIVE_APP_PACKET_TEST_TIMEOUT_MS) ?
+            pConfig->uiTimeoutMs : NATIVE_APP_PACKET_TEST_TIMEOUT_MS);
     iLength = snprintf(acPath, sizeof(acPath), "%s/application_packet.log", pcDirectory);
     if ((iLength < 0) || ((size_t)iLength >= sizeof(acPath))) {
         pResult->eError = IPSEC_ERR_BUFFER_TOO_SMALL;
@@ -757,7 +767,10 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
         return eError;
     }
     (void)fprintf(Session.pLog, "transport=TCP packet_path=APPLICATION case=%s "
-        "packets_per_direction=%u\n", pcCaseId, NATIVE_APP_PROBE_COUNT);
+        "packets_per_direction=%u packet_timeout_ms=%u\n", pcCaseId,
+        NATIVE_APP_PROBE_COUNT,
+        (pConfig->uiTimeoutMs < NATIVE_APP_PACKET_TEST_TIMEOUT_MS) ?
+            pConfig->uiTimeoutMs : NATIVE_APP_PACKET_TEST_TIMEOUT_MS);
     (void)fprintf(Session.pLog, "outer_local=%s outer_remote=%s local_ts=%s remote_ts=%s\n"
         "expected_spi_in=0x%08" PRIx32 " expected_spi_out=0x%08" PRIx32 "\n",
         pConfig->acLocalAddress, pConfig->acRemoteAddress, pConfig->acLocalTrafficSelector,

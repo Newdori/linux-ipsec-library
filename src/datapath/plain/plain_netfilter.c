@@ -219,8 +219,10 @@ IpsecError_t OpenIpsecPlainQueue(IpsecContext_t *pContext,
     }
     if (IPSEC_OK == eError) {
         LogIpsec(pContext, IPSEC_LOG_INFO,
-            "plain APPLICATION path bound NFQUEUE %u; OS rule owns post-decrypt selection",
-            (uint32_t)pState->usQueueNumber);
+            "plain APPLICATION path bound NFQUEUE %u; %s owns post-decrypt selection",
+            (uint32_t)pState->usQueueNumber,
+            pContext->DatapathConfig.bManagePlainNetfilterRule ?
+                "library" : "OS");
     }
     return eError;
 }

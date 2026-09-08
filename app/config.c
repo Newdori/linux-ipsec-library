@@ -441,8 +441,9 @@ void InitializeNativeAppConfig(NativeAppConfig_t *pConfig)
         pConfig->eRole = NATIVE_APP_ROLE_INITIATOR;
         pConfig->eMode = IPSEC_MODE_TUNNEL;
         pConfig->bTerminateOnExit = true;
-        pConfig->ePlainNetfilterHook =
-            NATIVE_APP_PLAIN_NETFILTER_INPUT;
+        pConfig->Datapath.ePlainNetfilterHook =
+            IPSEC_PLAIN_NETFILTER_INPUT;
+        pConfig->Datapath.bManagePlainNetfilterRule = true;
         pConfig->uiTimeoutMs = 30000U;
         pConfig->uiPeerPort = NATIVE_APP_PEER_DEFAULT_PORT;
         (void)CopyNativeAppText(pConfig->acOutputRoot,

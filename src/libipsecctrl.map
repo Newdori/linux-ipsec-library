@@ -1,4 +1,4 @@
-IPSEC_0.1 {
+IPSEC_0.2 {
     global:
         GetIpsecErrorString;
         GenerateIpsecPskFile;

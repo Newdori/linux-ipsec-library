@@ -56,11 +56,12 @@ plain_packet_path=system
 # Reserve this TC priority pair for connection-specific handles; allowed values: [0..65534, 0 uses 32000].
 # protected_filter_priority=32000
 
-# Plain APPLICATION requires an OS-owned post-decrypt NFQUEUE rule.
+# Plain APPLICATION uses a library-owned post-decrypt nftables rule.
 # Select that NFQUEUE; allowed values: [1..65535].
 # plain_queue_number=32002
 
 # Select the OS Netfilter rule hook; allowed values: [input|forward].
 # Use input for packets delivered locally and forward for routed inner traffic.
-# The library binds NFQUEUE but never executes iptables/nft commands.
+# The library installs/removes its scoped rule through NETLINK_NETFILTER;
+# it never executes iptables/nft commands.
 # plain_netfilter_hook=input

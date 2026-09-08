@@ -55,9 +55,9 @@ int main(void)
     Config.acRemoteTrafficSelector[12] = '4';
     CHECK(IPSEC_ERR_INVALID_ARGUMENT == ValidateNativeAppAlgorithmPacketConfig(&Config));
     Config.acRemoteTrafficSelector[12] = '3';
-    Config.ePlainNetfilterHook = NATIVE_APP_PLAIN_NETFILTER_FORWARD;
+    Config.Datapath.ePlainNetfilterHook = IPSEC_PLAIN_NETFILTER_FORWARD;
     CHECK(IPSEC_ERR_INVALID_ARGUMENT == ValidateNativeAppAlgorithmPacketConfig(&Config));
-    Config.ePlainNetfilterHook = NATIVE_APP_PLAIN_NETFILTER_INPUT;
+    Config.Datapath.ePlainNetfilterHook = IPSEC_PLAIN_NETFILTER_INPUT;
     memcpy(Config.acLocalTrafficSelector, "192.168.33.100/32", sizeof("192.168.33.100/32"));
     CHECK(IPSEC_ERR_INVALID_ARGUMENT == ValidateNativeAppAlgorithmPacketConfig(&Config));
     CHECK(0 == socketpair(AF_UNIX, SOCK_STREAM, 0, aiSockets));
