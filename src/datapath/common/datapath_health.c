@@ -47,8 +47,9 @@ IpsecError_t GetIpsecDatapathStatusEx(IpsecContext_t *pContext,
             const IpsecIkeSaInfo_t *pIke = &Ikes.pItems[uiIke];
             bInScope = !pChild->bUdpEncapsulation &&
                 (0 == strcmp(pIke->acName, pChild->acIkeName)) &&
-                (0 == strcmp(pIke->acLocalAddress, pContext->DatapathConfig.acProtectedLocalAddress)) &&
-                (0 == strcmp(pIke->acRemoteAddress, pContext->DatapathConfig.acProtectedRemoteAddress));
+                MatchIpsecProtectedPeerInternal(
+                    pContext, pIke->acLocalAddress,
+                    pIke->acRemoteAddress);
         }
         if (bInScope && (0 == strcmp(pChild->acState, "INSTALLED"))) {
             pStatus->uiInstalledChildCount++;

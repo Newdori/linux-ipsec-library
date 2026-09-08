@@ -8,6 +8,23 @@
 #include <time.h>
 
 static volatile sig_atomic_t gbNativeAppStopRequested = 0;
+static volatile sig_atomic_t gbNativeAppExitRequested = 0;
+
+void RequestNativeAppExit(void)
+{
+    gbNativeAppExitRequested = 1;
+    RequestNativeAppStop();
+}
+
+bool IsNativeAppExitRequested(void)
+{
+    return 0 != gbNativeAppExitRequested;
+}
+
+void ResetNativeAppExitRequest(void)
+{
+    gbNativeAppExitRequested = 0;
+}
 
 void RequestNativeAppStop(void)
 {
@@ -60,7 +77,7 @@ IpsecError_t LoadNativeAppCredential(
     Psk.uiDataLength = Secret.uiLength;
     Psk.Owners.ppcItems = pacOwners;
     Psk.Owners.uiCount = 2U;
-    eError = AddIpsecPsk(pContext, &Psk);
+    eError = AddNativeAppPsk(pContext, pConfig, &Psk);
     DestroyNativeAppSecret(&Secret);
     return eError;
 }
@@ -76,7 +93,7 @@ IpsecError_t LoadNativeAppResources(
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     else {
-        eError = AddIpsecConnection(pContext, &pRuntime->Connection);
+        eError = AddNativeAppConnection(pContext, pConfig, &pRuntime->Connection);
     }
     if (IPSEC_OK == eError) {
         eError = LoadNativeAppCredential(pContext, pConfig);
@@ -84,11 +101,20 @@ IpsecError_t LoadNativeAppResources(
     else {
         /* Preserve the connection error. */
     }
-    if (IPSEC_OK != eError) {
-        (void)RemoveIpsecConnection(pContext, pConfig->acConnectionName);
+    if ((IPSEC_OK != eError) && HasNativeAppOwnedSaTarget(
+            pConfig->pOwnedResources, pConfig->acConnectionName, false)) {
+        bool bActive = true;
+        IpsecError_t eQuery = GetNativeAppConnectionSaStatus(
+            pContext, pConfig->acConnectionName, &bActive);
+        if ((IPSEC_OK == eQuery) && !bActive) {
+            (void)RemoveIpsecConnection(pContext, pConfig->acConnectionName);
+        }
+        else {
+            /* Preserve negotiating/unknown SAs and their filters for shutdown. */
+        }
     }
     else {
-        /* Both resources remain available to charon. */
+        /* Keep success, or leave a rejected foreign connection untouched. */
     }
     return eError;
 }
@@ -153,10 +179,6 @@ IpsecError_t StopNativeAppConnection(
     bool bRemoveConnection,
     bool bClearCredentials)
 {
-    IpsecControlOptions_t Control = {
-        .uiStructSize = sizeof(IpsecControlOptions_t),
-        .eMode = IPSEC_CONTROL_WAIT
-    };
     NativeAppTargetStatus_t Status = {0};
     IpsecError_t eFirstError;
     IpsecError_t eError;
@@ -164,22 +186,9 @@ IpsecError_t StopNativeAppConnection(
     if ((NULL == pContext) || (NULL == pConfig)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
-    else {
-        Control.uiTimeoutMs = pConfig->uiTimeoutMs;
-    }
     eFirstError = GetNativeAppTargetStatus(pContext, pConfig, &Status);
-    if ((IPSEC_OK == eFirstError) &&
-        (Status.bIkeEstablished || Status.bChildInstalled)) {
-        eFirstError = TerminateIpsecIke(pContext,
-                                        pConfig->acConnectionName,
-                                        &Control);
-        if (IPSEC_OK == eFirstError) {
-            eFirstError = WaitNativeAppRemoved(
-                pContext, pConfig, Status.uiReqid);
-        }
-        else {
-            /* Do not unload resources until termination succeeds. */
-        }
+    if (IPSEC_OK == eFirstError) {
+        eFirstError = TerminateNativeAppTargetSas(pContext, pConfig);
     }
     else {
         /* A missing SA satisfies termination; query errors are preserved. */
@@ -202,7 +211,7 @@ IpsecError_t StopNativeAppConnection(
         /* Keep the connection definition loaded. */
     }
     if (bClearCredentials && (IPSEC_OK == eFirstError)) {
-        eError = RemoveIpsecPsk(pContext, pConfig->acCredentialId);
+        eError = RemoveNativeAppCredential(pContext, pConfig);
         if (IPSEC_OK != eError) {
             eFirstError = eError;
         }
@@ -420,8 +429,8 @@ IpsecError_t WaitNativeAppRemovedWithTimeout(
             }
             for (uiIndex = 0U; uiIndex < ChildList.uiCount; uiIndex++) {
                 bPresent = bPresent ||
-                    (0 == strcmp(pConfig->acChildName,
-                                 ChildList.pItems[uiIndex].acName));
+                    (0 == strcmp(pConfig->acConnectionName,
+                                 ChildList.pItems[uiIndex].acIkeName));
             }
             if (IPSEC_DATAPATH_KERNEL_XFRM == DatapathStatus.eType) {
                 for (uiIndex = 0U; uiIndex < StateList.uiCount; uiIndex++) {
@@ -523,7 +532,7 @@ IpsecError_t RunNativeAppLoop(
 
         (void)printf("loop %" PRIu32 "/%" PRIu32 ": load\n",
                      uiIteration, pOptions->uiCount);
-        eError = AddIpsecConnection(pContext, &pRuntime->Connection);
+        eError = AddNativeAppConnection(pContext, pConfig, &pRuntime->Connection);
         if (IPSEC_OK == eError) {
             bConnectionLoaded = true;
             bSaStarted = true;
@@ -631,7 +640,7 @@ IpsecError_t RunNativeAppLoop(
         }
     }
     if (pOptions->bClearCredentials && !bResourcesRemain) {
-        eError = RemoveIpsecPsk(pContext, pConfig->acCredentialId);
+        eError = RemoveNativeAppCredential(pContext, pConfig);
         if (IPSEC_OK == eError) {
             *pbCredentialLoaded = false;
         }

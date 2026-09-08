@@ -1,7 +1,12 @@
 #include "app_internal.h"
 
+#include <arpa/inet.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
 
 static bool SetTestText(
     char *pcDestination,
@@ -43,6 +48,7 @@ static bool VerifyStateResolution(void)
         !SetTestText(Ike.acName, sizeof(Ike.acName), "conn-rcst-1-1") ||
         !SetTestText(Child.acName, sizeof(Child.acName),
                      "child-rcst-1-1") ||
+        !SetTestText(Child.acIkeName, sizeof(Child.acIkeName), "conn-rcst-1-1") ||
         !SetTestText(Child.acState, sizeof(Child.acState), "INSTALLED")) {
         return false;
     }
@@ -75,6 +81,9 @@ static bool VerifyPeerUpsert(void)
     Peer.eState = NATIVE_APP_PEER_STATE_REGISTERED;
     if (SetTestText(Peer.Config.acRemoteAddress,
                     sizeof(Peer.Config.acRemoteAddress), "192.0.2.2") &&
+        SetTestText(Peer.Config.acRemoteTrafficSelector,
+                    sizeof(Peer.Config.acRemoteTrafficSelector),
+                    "172.16.10.1/32") &&
         SetTestText(Peer.Config.acConnectionName,
                     sizeof(Peer.Config.acConnectionName), "conn-rcst-1-1") &&
         SetTestText(Peer.Config.acChildName,
@@ -127,6 +136,9 @@ static bool VerifyActivePeerRenameRejected(void)
     Peer.bConnectionLoaded = true;
     if (SetTestText(Peer.Config.acRemoteAddress,
                     sizeof(Peer.Config.acRemoteAddress), "192.0.2.2") &&
+        SetTestText(Peer.Config.acRemoteTrafficSelector,
+                    sizeof(Peer.Config.acRemoteTrafficSelector),
+                    "172.16.10.1/32") &&
         SetTestText(Peer.Config.acConnectionName,
                     sizeof(Peer.Config.acConnectionName), "conn-rcst-1-1") &&
         SetTestText(Peer.Config.acChildName,
@@ -154,6 +166,176 @@ static bool VerifyActivePeerRenameRejected(void)
     return bValid;
 }
 
+static bool VerifyPeerTrafficSelectorConflicts(void)
+{
+    NativeAppPeerTable_t Table;
+    NativeAppPeer_t Peer = {0};
+    NativeAppPeer_t ChangedPeer;
+    NativeAppPeer_t StoredPeer;
+    bool bValid = false;
+
+    if (IPSEC_OK != InitializeNativeAppPeerTable(&Table)) {
+        return false;
+    }
+    Peer.uiGroupId = 1U;
+    Peer.uiLogonId = 1U;
+    Peer.uiRegistrationCount = 1U;
+    Peer.Config.eRole = NATIVE_APP_ROLE_INITIATOR;
+    if (!SetTestText(Peer.Config.acRemoteAddress,
+                     sizeof(Peer.Config.acRemoteAddress), "192.0.2.2") ||
+        !SetTestText(Peer.Config.acRemoteTrafficSelector,
+                     sizeof(Peer.Config.acRemoteTrafficSelector),
+                     "172.16.10.120/25") ||
+        (IPSEC_OK != UpsertNativeAppPeer(&Table, &Peer, &StoredPeer))) {
+        DeinitializeNativeAppPeerTable(&Table);
+        return false;
+    }
+
+    Peer.uiLogonId = 2U;
+    if (!SetTestText(Peer.Config.acRemoteAddress,
+                     sizeof(Peer.Config.acRemoteAddress), "192.0.2.3") ||
+        !SetTestText(Peer.Config.acRemoteTrafficSelector,
+                     sizeof(Peer.Config.acRemoteTrafficSelector),
+                     "172.16.10.0/24") ||
+        (IPSEC_ERR_RESOURCE_CONFLICT != UpsertNativeAppPeer(
+            &Table, &Peer, &StoredPeer)) ||
+        (1U != Table.uiCount)) {
+        DeinitializeNativeAppPeerTable(&Table);
+        return false;
+    }
+
+    if (!SetTestText(Peer.Config.acRemoteTrafficSelector,
+                     sizeof(Peer.Config.acRemoteTrafficSelector),
+                     "172.16.10.128/25") ||
+        (IPSEC_OK != UpsertNativeAppPeer(&Table, &Peer, &StoredPeer)) ||
+        (2U != Table.uiCount)) {
+        DeinitializeNativeAppPeerTable(&Table);
+        return false;
+    }
+
+    Peer.uiLogonId = 3U;
+    if (!SetTestText(Peer.Config.acRemoteAddress,
+                     sizeof(Peer.Config.acRemoteAddress), "192.0.2.4") ||
+        !SetTestText(Peer.Config.acRemoteTrafficSelector,
+                     sizeof(Peer.Config.acRemoteTrafficSelector),
+                     "172.16.10.200/32") ||
+        (IPSEC_ERR_RESOURCE_CONFLICT != UpsertNativeAppPeer(
+            &Table, &Peer, &StoredPeer)) ||
+        !SetTestText(Peer.Config.acRemoteTrafficSelector,
+                     sizeof(Peer.Config.acRemoteTrafficSelector),
+                     "172.16.11.200/32") ||
+        (IPSEC_OK != UpsertNativeAppPeer(&Table, &Peer, &StoredPeer)) ||
+        (3U != Table.uiCount)) {
+        DeinitializeNativeAppPeerTable(&Table);
+        return false;
+    }
+
+    Peer.uiLogonId = 4U;
+    if (!SetTestText(Peer.Config.acRemoteAddress,
+                     sizeof(Peer.Config.acRemoteAddress), "2001:db8::4") ||
+        !SetTestText(Peer.Config.acRemoteTrafficSelector,
+                     sizeof(Peer.Config.acRemoteTrafficSelector),
+                     "2001:db8:1::1/64") ||
+        (IPSEC_OK != UpsertNativeAppPeer(&Table, &Peer, &StoredPeer)) ||
+        (4U != Table.uiCount)) {
+        DeinitializeNativeAppPeerTable(&Table);
+        return false;
+    }
+
+    Peer.uiLogonId = 5U;
+    if (!SetTestText(Peer.Config.acRemoteAddress,
+                     sizeof(Peer.Config.acRemoteAddress), "2001:db8::5") ||
+        !SetTestText(Peer.Config.acRemoteTrafficSelector,
+                     sizeof(Peer.Config.acRemoteTrafficSelector),
+                     "2001:db8:1::abcd/80") ||
+        (IPSEC_ERR_RESOURCE_CONFLICT != UpsertNativeAppPeer(
+            &Table, &Peer, &StoredPeer)) ||
+        (4U != Table.uiCount)) {
+        DeinitializeNativeAppPeerTable(&Table);
+        return false;
+    }
+
+    Table.aPeers[0].bConnectionLoaded = true;
+    ChangedPeer = Table.aPeers[0];
+    if (!SetTestText(ChangedPeer.Config.acRemoteTrafficSelector,
+                     sizeof(ChangedPeer.Config.acRemoteTrafficSelector),
+                     "172.16.12.1/32") ||
+        (IPSEC_ERR_RESOURCE_CONFLICT != UpsertNativeAppPeer(
+            &Table, &ChangedPeer, &StoredPeer)) ||
+        (0 != strcmp("172.16.10.120/25",
+                     Table.aPeers[0].Config.acRemoteTrafficSelector))) {
+        DeinitializeNativeAppPeerTable(&Table);
+        return false;
+    }
+
+    Peer.uiLogonId = 5U;
+    if (SetTestText(Peer.Config.acRemoteAddress,
+                    sizeof(Peer.Config.acRemoteAddress), "192.0.2.5") &&
+        SetTestText(Peer.Config.acRemoteTrafficSelector,
+                    sizeof(Peer.Config.acRemoteTrafficSelector),
+                    "172.16.12.1/33") &&
+        (IPSEC_ERR_INVALID_ARGUMENT == UpsertNativeAppPeer(
+            &Table, &Peer, &StoredPeer)) &&
+        (4U == Table.uiCount)) {
+        bValid = true;
+    }
+    else {
+        /* A malformed selector must not change the peer table. */
+    }
+    DeinitializeNativeAppPeerTable(&Table);
+    return bValid;
+}
+
+static bool VerifyPeerListenerStop(void)
+{
+    NativeAppPeerListener_t Listener = {0};
+    NativeAppPeerTable_t Table;
+    NativeAppConfig_t Config = {.eRole = NATIVE_APP_ROLE_INITIATOR,
+        .uiTimeoutMs = 60000U, .uiPeerPort = 0U};
+    struct sockaddr_in Address;
+    socklen_t uiAddressLength = sizeof(Address);
+    struct timespec Start, End;
+    char acError[NATIVE_APP_ERROR_TEXT_LENGTH] = {0};
+    int32_t iClient = -1;
+    bool bValid = false;
+    IpsecError_t eError = InitializeNativeAppPeerTable(&Table);
+    if (IPSEC_OK != eError) {
+        return false;
+    }
+    (void)SetTestText(Config.acPeerServerAddress, sizeof(Config.acPeerServerAddress), "127.0.0.1");
+    (void)SetTestText(Config.acLocalId, sizeof(Config.acLocalId), "test-local");
+    (void)SetTestText(Config.acIkeProposals, sizeof(Config.acIkeProposals), "aes256-sha256-modp2048");
+    (void)SetTestText(Config.acEspProposals, sizeof(Config.acEspProposals), "aes256-sha256");
+    eError = StartNativeAppPeerListener(&Listener, &Config, &Table, NULL, NULL,
+        acError, sizeof(acError));
+    if (IPSEC_OK == eError) {
+        iClient = socket(AF_INET, SOCK_STREAM, 0);
+        if ((0 <= iClient) &&
+            (0 == getsockname(Listener.iServerSocket, (struct sockaddr *)&Address, &uiAddressLength)) &&
+            (0 == connect(iClient, (const struct sockaddr *)&Address, sizeof(Address))) &&
+            (7 == send(iClient, "RCST/2 ", 7U, MSG_NOSIGNAL))) {
+            /* Leave the accepted registration incomplete. Shutdown must not wait
+             * for its 60-second read deadline, or require the client to close. */
+            (void)poll(NULL, 0U, 100);
+            if (0 == clock_gettime(CLOCK_MONOTONIC, &Start)) {
+                StopNativeAppPeerListener(&Listener);
+                if (0 == clock_gettime(CLOCK_MONOTONIC, &End)) {
+                    int64_t llElapsed = (int64_t)(End.tv_sec - Start.tv_sec) * 1000000000LL +
+                        (int64_t)End.tv_nsec - (int64_t)Start.tv_nsec;
+                    bValid = (0 <= llElapsed) && (llElapsed < 2000000000LL) &&
+                        !Listener.bRunning && (-1 == Listener.iServerSocket);
+                }
+            }
+        }
+    }
+    if (0 <= iClient) {
+        (void)close(iClient);
+    }
+    StopNativeAppPeerListener(&Listener);
+    DeinitializeNativeAppPeerTable(&Table);
+    return bValid;
+}
+
 int main(void)
 {
     if (!VerifyStateResolution()) {
@@ -166,6 +348,14 @@ int main(void)
     }
     else if (!VerifyActivePeerRenameRejected()) {
         (void)fprintf(stderr, "active peer reassignment was not rejected\n");
+        return 1;
+    }
+    else if (!VerifyPeerTrafficSelectorConflicts()) {
+        (void)fprintf(stderr, "peer traffic selector conflict handling failed\n");
+        return 1;
+    }
+    else if (!VerifyPeerListenerStop()) {
+        (void)fprintf(stderr, "partial peer registration blocked listener shutdown\n");
         return 1;
     }
     else if (IPSEC_ERR_INVALID_ARGUMENT != RemoveIpsecPsk(NULL, "psk")) {

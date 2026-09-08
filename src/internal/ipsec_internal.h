@@ -95,4 +95,18 @@ uint64_t GetIpsecMonotonicMilliseconds(void);
 
 IpsecError_t SleepIpsecMilliseconds(uint32_t uiMilliseconds);
 
+IpsecError_t RegisterIpsecProtectedPeerInternal(
+    IpsecContext_t *pContext,
+    const IpsecConnectionConfig_t *pConfig,
+    bool *pbAdded);
+
+IpsecError_t UnregisterIpsecProtectedPeerInternal(
+    IpsecContext_t *pContext,
+    const char *pcConnectionName);
+
+bool MatchIpsecProtectedPeerInternal(
+    IpsecContext_t *pContext,
+    const char *pcLocalAddress,
+    const char *pcRemoteAddress);
+
 #endif

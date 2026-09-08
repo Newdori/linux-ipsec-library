@@ -91,24 +91,27 @@ void ResolveNativeAppTargetStatus(
         }
     }
     for (uiIndex = 0U; uiIndex < pIkeSas->uiCount; uiIndex++) {
-        if ((0 == strcmp(pConfig->acConnectionName,
-                         pIkeSas->pItems[uiIndex].acName)) &&
-            pIkeSas->pItems[uiIndex].bEstablished) {
-            pStatus->bIkeEstablished = true;
-            break;
+        if (0 == strcmp(pConfig->acConnectionName,
+                        pIkeSas->pItems[uiIndex].acName)) {
+            pStatus->bIkePresent = true;
+            pStatus->bIkeEstablished = pStatus->bIkeEstablished ||
+                pIkeSas->pItems[uiIndex].bEstablished;
         }
         else {
             /* Check the next IKE SA. */
         }
     }
     for (uiIndex = 0U; uiIndex < pChildSas->uiCount; uiIndex++) {
-        if ((0 == strcmp(pConfig->acChildName,
-                         pChildSas->pItems[uiIndex].acName)) &&
-            (0 == strcmp("INSTALLED",
-                         pChildSas->pItems[uiIndex].acState))) {
-            pStatus->bChildInstalled = true;
+        if (0 == strcmp(pConfig->acConnectionName,
+                        pChildSas->pItems[uiIndex].acIkeName)) {
+            pStatus->bChildPresent = true;
+        }
+        if ((0 == strcmp(pConfig->acChildName, pChildSas->pItems[uiIndex].acName)) &&
+            (0 == strcmp(pConfig->acConnectionName, pChildSas->pItems[uiIndex].acIkeName))) {
+            pStatus->bChildPresent = true;
+            pStatus->bChildInstalled = pStatus->bChildInstalled ||
+                (0 == strcmp("INSTALLED", pChildSas->pItems[uiIndex].acState));
             pStatus->uiReqid = pChildSas->pItems[uiIndex].uiReqid;
-            break;
         }
         else {
             /* Check the next CHILD SA. */

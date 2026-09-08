@@ -116,9 +116,11 @@ endif()
 if(IPSEC_BUILD_APP)
     add_executable(ipsec_app
         ../app/main.c ../app/cli.c ../app/command.c ../app/config.c
-        ../app/datapath.c ../app/packet.c ../app/lifecycle.c ../app/peer.c
+        ../app/datapath.c ../app/diagnostic_log.c ../app/packet.c ../app/lifecycle.c ../app/shutdown.c ../app/peer.c
         ../app/state.c ../app/show.c ../app/algorithm_capability.c
-        ../app/algorithm_catalog.c ../app/algorithm_report.c ../app/algorithm_runner.c)
+        ../app/algorithm_catalog.c ../app/algorithm_report.c ../app/algorithm_runner.c
+        ../app/algorithm_packet.c ../app/algorithm_packet_codec.c
+        ../app/algorithm_packet_evidence.c)
     target_compile_definitions(ipsec_app PRIVATE _POSIX_C_SOURCE=200809L)
     target_compile_options(ipsec_app PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_link_libraries(ipsec_app PRIVATE ipsec_static Threads::Threads ${CMAKE_DL_LIBS})
@@ -138,6 +140,7 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
             test_route_netlink
             test_tun_discovery
             test_protected_filter
+            test_protected_tun
             test_plain_netfilter
             test_psk_generate)
         add_executable(${TestName}
@@ -226,6 +229,14 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     target_link_libraries(test_app_state PRIVATE
         ipsec_static Threads::Threads)
     add_test(NAME test_app_state COMMAND test_app_state)
+    set_tests_properties(test_app_state PROPERTIES TIMEOUT 10)
+    add_executable(test_app_shutdown ../tests/unit/test_app_shutdown.c
+        ../app/shutdown.c ../app/state.c core/error.c)
+    target_include_directories(test_app_shutdown PRIVATE ../include ../app)
+    target_compile_definitions(test_app_shutdown PRIVATE _POSIX_C_SOURCE=200809L)
+    target_compile_options(test_app_shutdown PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME test_app_shutdown COMMAND test_app_shutdown)
+    set_tests_properties(test_app_shutdown PROPERTIES TIMEOUT 10)
 
     add_executable(test_app_command
         ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_app_command.c
@@ -242,6 +253,34 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
     add_executable(test_app_datapath ../tests/unit/test_app_datapath.c
         ../app/config.c ../app/datapath.c ../app/command.c)
     add_executable(test_app_packet ../tests/unit/test_app_packet.c ../app/packet.c)
+    add_executable(test_algorithm_packet_codec ../tests/unit/test_algorithm_packet_codec.c
+        ../app/algorithm_packet_codec.c)
+    target_include_directories(test_algorithm_packet_codec PRIVATE ../include ../app)
+    target_compile_options(test_algorithm_packet_codec PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME test_algorithm_packet_codec COMMAND test_algorithm_packet_codec)
+    add_executable(test_algorithm_packet_evidence ../tests/unit/test_algorithm_packet_evidence.c
+        ../app/algorithm_packet_codec.c ../app/algorithm_packet_evidence.c)
+    target_include_directories(test_algorithm_packet_evidence PRIVATE ../include ../app)
+    target_compile_definitions(test_algorithm_packet_evidence PRIVATE _POSIX_C_SOURCE=200809L)
+    target_compile_options(test_algorithm_packet_evidence PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(test_algorithm_packet_evidence PRIVATE ipsec_static)
+    add_test(NAME test_algorithm_packet_evidence COMMAND test_algorithm_packet_evidence)
+    add_executable(test_algorithm_packet_transport ../tests/unit/test_algorithm_packet_transport.c
+        ../app/algorithm_packet.c ../app/algorithm_packet_codec.c ../app/algorithm_packet_evidence.c
+        ../app/diagnostic_log.c)
+    target_include_directories(test_algorithm_packet_transport PRIVATE ../include ../app)
+    target_compile_definitions(test_algorithm_packet_transport PRIVATE _POSIX_C_SOURCE=200809L)
+    target_compile_options(test_algorithm_packet_transport PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(test_algorithm_packet_transport PRIVATE ipsec_static Threads::Threads)
+    add_test(NAME test_algorithm_packet_transport COMMAND test_algorithm_packet_transport)
+    set_tests_properties(test_algorithm_packet_transport PROPERTIES TIMEOUT 10)
+    add_executable(test_app_diagnostic_log ../tests/unit/test_app_diagnostic_log.c
+        ../app/diagnostic_log.c)
+    target_include_directories(test_app_diagnostic_log PRIVATE ../include ../app)
+    target_compile_definitions(test_app_diagnostic_log PRIVATE _POSIX_C_SOURCE=200809L)
+    target_compile_options(test_app_diagnostic_log PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(test_app_diagnostic_log PRIVATE Threads::Threads)
+    add_test(NAME test_app_diagnostic_log COMMAND test_app_diagnostic_log)
     foreach(TestName IN ITEMS test_app_datapath test_app_packet)
         target_include_directories(${TestName} PRIVATE ../include ../app)
         target_compile_definitions(${TestName} PRIVATE _POSIX_C_SOURCE=200809L)

@@ -24,6 +24,199 @@ static void SetProtectedApplicationIfreqName(struct ifreq *pRequest, const char 
     memcpy(pRequest->ifr_name, pcName, strlen(pcName) + 1U);
 }
 
+static bool ResolveProtectedApplicationTunName(
+    const IpsecProtectedApplicationState_t *pState, struct ifreq *pRequest)
+{
+    memset(pRequest, 0, sizeof(*pRequest));
+    return (0 == ioctl(pState->iTunFd, TUNGETIFF, pRequest)) &&
+        (0 != (pRequest->ifr_flags & IFF_TUN)) &&
+        (NULL != memchr(pRequest->ifr_name, '\0', IFNAMSIZ)) &&
+        (0 == strncmp(pRequest->ifr_name, pState->acTunName, IFNAMSIZ)) &&
+        ('\0' != pRequest->ifr_name[0]) &&
+        (NULL == strchr(pRequest->ifr_name, '/')) &&
+        (0 != strcmp(pRequest->ifr_name, ".")) &&
+        (0 != strcmp(pRequest->ifr_name, "..")) &&
+        (0 != strcmp(pRequest->ifr_name, "all")) &&
+        (0 != strcmp(pRequest->ifr_name, "default"));
+}
+
+static IpsecError_t ReadProtectedApplicationSysctl(int32_t iDirectory,
+    const char *pcSetting, uint32_t *puiValue)
+{
+    char acValue[4] = {0};
+    int32_t iSetting = (int32_t)openat(iDirectory, pcSetting,
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    ssize_t lLength;
+    if (iSetting < 0) {
+        return MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+    }
+    do {
+        lLength = read(iSetting, acValue, sizeof(acValue));
+    } while ((lLength < 0) && (EINTR == errno));
+    (void)close(iSetting);
+    if ((2 != lLength) || (acValue[0] < '0') || (acValue[0] > '2') ||
+        ('\n' != acValue[1])) {
+        return IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
+    }
+    *puiValue = (uint32_t)(acValue[0] - '0');
+    return IPSEC_OK;
+}
+
+static IpsecError_t ConfigureProtectedApplicationReversePath(
+    const IpsecProtectedApplicationState_t *pState, bool bConfigure)
+{
+    struct ifreq Request;
+    int32_t iDirectory;
+    int32_t iInterface;
+    int32_t iAll;
+    int32_t iSetting;
+    uint32_t uiAll = 0U;
+    uint32_t uiInterface = 0U;
+    IpsecError_t eError;
+    if (!ResolveProtectedApplicationTunName(pState, &Request)) {
+        return IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
+    }
+    iDirectory = (int32_t)open("/proc/sys/net/ipv4/conf",
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (iDirectory < 0) {
+        return MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+    }
+    /* all is read-only: Linux uses max(all, interface). Only the exclusively
+     * created non-persistent TUN may be changed; never the NIC/charon TUN. */
+    iAll = (int32_t)openat(iDirectory, "all",
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    eError = (iAll < 0) ? MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE) :
+        ReadProtectedApplicationSysctl(iAll, "rp_filter", &uiAll);
+    if (iAll >= 0) {
+        (void)close(iAll);
+    }
+    if (IPSEC_OK != eError) {
+        (void)close(iDirectory);
+        return eError;
+    }
+    iInterface = (int32_t)openat(iDirectory, Request.ifr_name,
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (iInterface < 0) {
+        eError = MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+        (void)close(iDirectory);
+        return eError;
+    }
+    (void)close(iDirectory);
+    eError = ReadProtectedApplicationSysctl(iInterface, "rp_filter", &uiInterface);
+    if ((IPSEC_OK == eError) && bConfigure && (2U != uiInterface)) {
+        iSetting = (int32_t)openat(iInterface, "rp_filter",
+            O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (iSetting < 0) {
+            eError = MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+        }
+        else {
+            ssize_t lLength;
+            do {
+                lLength = write(iSetting, "2\n", 2U);
+            } while ((lLength < 0) && (EINTR == errno));
+            if (2 != lLength) {
+                eError = MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+            }
+            (void)close(iSetting);
+        }
+        if (IPSEC_OK == eError) {
+            eError = ReadProtectedApplicationSysctl(iInterface, "rp_filter", &uiInterface);
+            if ((IPSEC_OK == eError) && (2U != uiInterface)) {
+                eError = IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
+            }
+        }
+    }
+    (void)close(iInterface);
+    if ((IPSEC_OK == eError) && (1U == ((uiAll > uiInterface) ? uiAll : uiInterface))) {
+        /* Fail early if another actor later restores strict filtering. */
+        eError = IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
+    }
+    return eError;
+}
+
+static IpsecError_t DisableProtectedApplicationIpv6(
+    const IpsecProtectedApplicationState_t *pState)
+{
+    struct ifreq Request;
+    char acValue[4] = {0};
+    int32_t iDirectory;
+    int32_t iInterface;
+    int32_t iSetting;
+    int32_t iSavedErrno;
+    ssize_t lLength;
+    IpsecError_t eError = IPSEC_OK;
+
+    /* Resolve from the exclusively created, non-persistent TUN fd. Never
+     * modify conf/all, conf/default, the NIC or charon's TUN. */
+    if (!ResolveProtectedApplicationTunName(pState, &Request)) {
+        return IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
+    }
+    iDirectory = (int32_t)open("/proc/sys/net/ipv6/conf",
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (iDirectory < 0) {
+        if (ENOENT == errno) {
+            int32_t iIpv6 = (int32_t)socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+            if (iIpv6 < 0) {
+                /* IPv6 compiled out / disabled at boot needs no sysctl. */
+                return (EAFNOSUPPORT == errno) ? IPSEC_OK :
+                    MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+            }
+            (void)close(iIpv6);
+        }
+        return MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+    }
+    iInterface = (int32_t)openat(iDirectory, Request.ifr_name,
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    iSavedErrno = errno;
+    (void)close(iDirectory);
+    errno = iSavedErrno;
+    if (iInterface < 0) {
+        return MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+    }
+    iSetting = (int32_t)openat(iInterface, "disable_ipv6",
+        O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (iSetting < 0) {
+        eError = MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+    }
+    else {
+        do {
+            lLength = write(iSetting, "1\n", 2U);
+        } while ((lLength < 0) && (EINTR == errno));
+        if (2 != lLength) {
+            eError = MapProtectedApplicationError(
+                IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+        }
+        else {
+            /* Reopen for verification; do not assume /proc sysctls are
+             * seekable after a write. */
+        }
+        (void)close(iSetting);
+    }
+    if (IPSEC_OK == eError) {
+        iSetting = (int32_t)openat(iInterface, "disable_ipv6",
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (iSetting < 0) {
+            eError = MapProtectedApplicationError(
+                IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+        }
+        else {
+            do {
+                lLength = read(iSetting, acValue, sizeof(acValue));
+            } while ((lLength < 0) && (EINTR == errno));
+            if ((2 != lLength) || ('1' != acValue[0]) ||
+                ('\n' != acValue[1])) {
+                eError = IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
+            }
+            (void)close(iSetting);
+        }
+    }
+    else {
+        /* Preserve the write/open error. */
+    }
+    (void)close(iInterface);
+    return eError;
+}
+
 IpsecError_t CreateIpsecProtectedApplicationEndpoint(IpsecContext_t *pContext, IpsecProtectedApplicationState_t *pState)
 {
     struct ifreq Request;
@@ -79,9 +272,31 @@ IpsecError_t CreateIpsecProtectedApplicationEndpoint(IpsecContext_t *pContext, I
                     eError = MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
                 }
                 else {
-                    Request.ifr_flags = IFF_UP;
-                    if (0 != ioctl(iSocket, SIOCSIFFLAGS, &Request)) {
-                        eError = MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+                    eError = DisableProtectedApplicationIpv6(pState);
+                    if (IPSEC_OK == eError) {
+                        eError = ConfigureProtectedApplicationReversePath(pState, true);
+                        if (IPSEC_OK != eError) {
+                            LogIpsec(pContext, IPSEC_LOG_ERROR,
+                                "protected TUN %s: cannot configure/verify owned rp_filter=2: %s",
+                                pState->acTunName, GetIpsecErrorString(eError));
+                        }
+                        else {
+                            LogIpsec(pContext, IPSEC_LOG_INFO,
+                                "protected TUN %s: rp_filter=2 (loose); global/NIC/charon settings unchanged",
+                                pState->acTunName);
+                        }
+                    }
+                    else {
+                        LogIpsec(pContext, IPSEC_LOG_ERROR,
+                            "protected TUN %s: cannot disable IPv6 on the owned endpoint "
+                            "before interface UP: %s; check per-interface proc sysctl access",
+                            pState->acTunName, GetIpsecErrorString(eError));
+                    }
+                    if (IPSEC_OK == eError) {
+                        Request.ifr_flags = IFF_UP;
+                        if (0 != ioctl(iSocket, SIOCSIFFLAGS, &Request)) {
+                            eError = MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+                        }
                     }
                 }
             }
@@ -96,7 +311,7 @@ IpsecError_t InspectIpsecProtectedApplicationEndpoint(const IpsecProtectedApplic
     struct ifreq Request;
     int32_t iSocket;
     IpsecError_t eError = IPSEC_OK;
-    if ((pState->iTunFd < 0) || !pState->bRawFilter || !pState->bUdpFilter) {
+    if (pState->iTunFd < 0) {
         return IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
     }
     iSocket = (int32_t)socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
@@ -121,7 +336,7 @@ IpsecError_t InspectIpsecProtectedApplicationEndpoint(const IpsecProtectedApplic
     }
     (void)close(iSocket);
     if (IPSEC_OK == eError) {
-        eError = InspectIpsecProtectedApplicationFilters(pState, false);
+        eError = ConfigureProtectedApplicationReversePath(pState, false);
     }
     return eError;
 }

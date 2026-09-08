@@ -24,7 +24,9 @@ typedef enum TestMode {
     TEST_RECONNECT,
     TEST_BAD_STREAM,
     TEST_PARTIAL_FRAME,
-    TEST_REJECT_SECRET
+    TEST_REJECT_SECRET,
+    TEST_UNLOAD_ABSENT,
+    TEST_UNLOAD_PRESENT
 } TestMode_t;
 
 typedef struct TestClient {
@@ -160,7 +162,7 @@ static void HandleTestPacket(TestServer_t *pServer, TestClient_t *pClient,
                               const ViciPacketView_t *pView)
 {
     bool bSaEvent = (VICI_PACKET_EVENT_REGISTER == pView->eType) &&
-                   !MatchTestName(pView, "list-sa");
+                   !MatchTestName(pView, "list-sa") && !MatchTestName(pView, "list-conn");
     ViciBuffer_t Message = {0};
 
     if ((VICI_PACKET_EVENT_REGISTER == pView->eType) ||
@@ -191,6 +193,24 @@ static void HandleTestPacket(TestServer_t *pServer, TestClient_t *pClient,
         }
         if (TEST_BAD_STREAM == pServer->eMode) {
             pServer->bReady = true;
+        }
+        SendTestPacket(pClient->iSocket, VICI_PACKET_COMMAND_RESPONSE, NULL, NULL);
+    }
+    else if (((TEST_UNLOAD_ABSENT == pServer->eMode) || (TEST_UNLOAD_PRESENT == pServer->eMode)) &&
+             MatchTestName(pView, "unload-conn")) {
+        CHECK(IPSEC_OK == InitializeViciBuffer(&Message, 128U, false));
+        CHECK(IPSEC_OK == AddViciKeyValueString(&Message, "success", "no"));
+        CHECK(IPSEC_OK == AddViciKeyValueString(&Message, "errmsg", "unload refused"));
+        SendTestPacket(pClient->iSocket, VICI_PACKET_COMMAND_RESPONSE, NULL, &Message);
+        DestroyViciBuffer(&Message);
+    }
+    else if (MatchTestName(pView, "list-conns")) {
+        if (TEST_UNLOAD_PRESENT == pServer->eMode) {
+            CHECK(IPSEC_OK == InitializeViciBuffer(&Message, 128U, false));
+            CHECK(IPSEC_OK == AddViciSectionStart(&Message, "vpn1"));
+            CHECK(IPSEC_OK == AddViciSectionEnd(&Message));
+            SendTestPacket(pClient->iSocket, VICI_PACKET_EVENT, "list-conn", &Message);
+            DestroyViciBuffer(&Message);
         }
         SendTestPacket(pClient->iSocket, VICI_PACKET_COMMAND_RESPONSE, NULL, NULL);
     }
@@ -488,6 +508,24 @@ static void TestSensitiveDiagnostic(void)
     StopTestServer(&Server, pContext);
 }
 
+static void VerifyIdempotentUnload(bool bPresent)
+{
+    TestServer_t Server;
+    IpsecDiagnostic_t Diagnostic = {.uiStructSize = sizeof(Diagnostic)};
+    IpsecContext_t *pContext = StartTestServer(&Server,
+        bPresent ? TEST_UNLOAD_PRESENT : TEST_UNLOAD_ABSENT);
+    CHECK((bPresent ? IPSEC_ERR_VICI_COMMAND : IPSEC_OK) == RemoveIpsecConnection(pContext, "vpn1"));
+    if (bPresent) {
+        CHECK(IPSEC_OK == GetIpsecLastDiagnostic(pContext, &Diagnostic));
+        CHECK(IPSEC_ERR_VICI_COMMAND == Diagnostic.eError);
+        CHECK(IPSEC_STAGE_DAEMON == Diagnostic.eStage);
+    }
+    else {
+        CHECK(IPSEC_OK == RemoveIpsecConnection(pContext, "vpn1"));
+    }
+    StopTestServer(&Server, pContext);
+}
+
 int main(void)
 {
     TestEventWait(false, TEST_EVENT);
@@ -501,5 +539,7 @@ int main(void)
     TestQueueDeadline();
     TestStreamRecovery();
     TestSensitiveDiagnostic();
+    VerifyIdempotentUnload(false);
+    VerifyIdempotentUnload(true);
     return 0;
 }

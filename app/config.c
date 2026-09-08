@@ -165,6 +165,16 @@ IpsecError_t SetNativeAppConfigSetting(
         bAccepted = CopyNativeAppText(pConfig->acRemoteAddress,
                                      sizeof(pConfig->acRemoteAddress), pcValue);
     }
+    else if (0 == strcmp("local_ts", pcKey)) {
+        bAccepted = CopyNativeAppText(
+            pConfig->acLocalTrafficSelector,
+            sizeof(pConfig->acLocalTrafficSelector), pcValue);
+    }
+    else if (0 == strcmp("remote_ts", pcKey)) {
+        bAccepted = CopyNativeAppText(
+            pConfig->acRemoteTrafficSelector,
+            sizeof(pConfig->acRemoteTrafficSelector), pcValue);
+    }
     else if (0 == strcmp("local_id", pcKey)) {
         bAccepted = CopyNativeAppText(pConfig->acLocalId,
                                      sizeof(pConfig->acLocalId), pcValue);
@@ -283,6 +293,78 @@ static bool IsNativeAppAddressValid(const char *pcAddress)
            (1 == inet_pton(AF_INET6, pcAddress, aucBuffer));
 }
 
+static bool IsNativeAppTrafficSelectorValid(const char *pcSelector)
+{
+    uint8_t aucAddress[sizeof(struct in6_addr)];
+    char acAddress[IPSEC_ADDRESS_LENGTH];
+    const char *pcSlash;
+    size_t zAddressLength;
+    uint32_t uiPrefixLength;
+    uint32_t uiMaximumPrefix;
+
+    if (NULL == pcSelector) {
+        return false;
+    }
+    pcSlash = strchr(pcSelector, '/');
+    if ((NULL == pcSlash) || (NULL != strchr(pcSlash + 1U, '/')) ||
+        (NULL != strchr(pcSelector, ','))) {
+        return false;
+    }
+    zAddressLength = (size_t)(pcSlash - pcSelector);
+    if ((0U == zAddressLength) || (zAddressLength >= sizeof(acAddress))) {
+        return false;
+    }
+    (void)memcpy(acAddress, pcSelector, zAddressLength);
+    acAddress[zAddressLength] = '\0';
+    if (1 == inet_pton(AF_INET, acAddress, aucAddress)) {
+        uiMaximumPrefix = 32U;
+    }
+    else if (1 == inet_pton(AF_INET6, acAddress, aucAddress)) {
+        uiMaximumPrefix = 128U;
+    }
+    else {
+        return false;
+    }
+    return ParseNativeAppUint32(pcSlash + 1U, &uiPrefixLength) &&
+        (uiPrefixLength <= uiMaximumPrefix);
+}
+
+static IpsecError_t SetNativeAppDefaultTrafficSelector(
+    const char *pcAddress,
+    char *pcSelector,
+    uint32_t uiSelectorLength)
+{
+    uint8_t aucAddress[sizeof(struct in6_addr)];
+    const char *pcPrefix;
+    int32_t iLength;
+
+    if ((NULL == pcAddress) || (NULL == pcSelector) ||
+        (0U == uiSelectorLength)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    if ('\0' != pcSelector[0]) {
+        return IPSEC_OK;
+    }
+    if (1 == inet_pton(AF_INET, pcAddress, aucAddress)) {
+        pcPrefix = "/32";
+    }
+    else if (1 == inet_pton(AF_INET6, pcAddress, aucAddress)) {
+        pcPrefix = "/128";
+    }
+    else {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    iLength = snprintf(pcSelector, uiSelectorLength, "%s%s", pcAddress,
+                       pcPrefix);
+    if ((0 > iLength) || ((uint32_t)iLength >= uiSelectorLength)) {
+        pcSelector[uiSelectorLength - 1U] = '\0';
+        return IPSEC_ERR_BUFFER_TOO_SMALL;
+    }
+    else {
+        return IPSEC_OK;
+    }
+}
+
 IpsecError_t ValidateNativeAppConfig(
     const NativeAppConfig_t *pConfig,
     char *pcError,
@@ -301,6 +383,17 @@ IpsecError_t ValidateNativeAppConfig(
     }
     else if (!IsNativeAppAddressValid(pConfig->acRemoteAddress)) {
         pcInvalid = "remote_ip";
+    }
+    else if (!IsNativeAppTrafficSelectorValid(
+                 pConfig->acLocalTrafficSelector)) {
+        pcInvalid = "local_ts";
+    }
+    else if ((('\0' != pConfig->acRemoteTrafficSelector[0]) &&
+              !IsNativeAppTrafficSelectorValid(
+                  pConfig->acRemoteTrafficSelector)) ||
+             (('\0' == pConfig->acRemoteTrafficSelector[0]) &&
+              !IsNativeAppAddressValid(pConfig->acRemoteAddress))) {
+        pcInvalid = "remote_ts";
     }
     else if ('\0' == pConfig->acLocalId[0]) {
         pcInvalid = "local_id";
@@ -347,6 +440,9 @@ void InitializeNativeAppConfig(NativeAppConfig_t *pConfig)
         pConfig->Datapath.uiStructSize = sizeof(pConfig->Datapath);
         pConfig->eRole = NATIVE_APP_ROLE_INITIATOR;
         pConfig->eMode = IPSEC_MODE_TUNNEL;
+        pConfig->bTerminateOnExit = true;
+        pConfig->ePlainNetfilterHook =
+            NATIVE_APP_PLAIN_NETFILTER_INPUT;
         pConfig->uiTimeoutMs = 30000U;
         pConfig->uiPeerPort = NATIVE_APP_PEER_DEFAULT_PORT;
         (void)CopyNativeAppText(pConfig->acOutputRoot,
@@ -368,10 +464,12 @@ typedef IpsecError_t (*NativeAppConfigSetter_t)(
 static bool IsNativeAppApplicationKey(const char *pcKey)
 {
     static const char *pacKeys[] = {
-        "role", "local_ip", "local_id", "psk_file", "output_root",
+        "role", "local_ip", "remote_ip", "local_ts", "remote_ts",
+        "local_id", "remote_id", "psk_file", "output_root",
         "vici_uri", "childless_ike", "terminate_on_exit",
         "command_timeout_sec", "timeout_sec", "peer_server_ip",
-        "peer_port"
+        "peer_port", "connection_name", "child_name", "credential_id",
+        "ike_proposals", "esp_proposals", "ipsec_mode"
     };
     uint32_t uiIndex;
 
@@ -514,15 +612,16 @@ IpsecError_t ValidateNativeAppBaseConfig(
     else if (!IsNativeAppAddressValid(pConfig->acLocalAddress)) {
         pcInvalid = "local_ip";
     }
+    else if (!IsNativeAppTrafficSelectorValid(
+                 pConfig->acLocalTrafficSelector)) {
+        pcInvalid = "local_ts";
+    }
     else if ((NATIVE_APP_ROLE_INITIATOR == pConfig->eRole) &&
              ('\0' == pConfig->acLocalId[0])) {
         pcInvalid = "local_id";
     }
     else if ('\0' == pConfig->acPskFile[0]) {
         pcInvalid = "psk_file";
-    }
-    else if (!IsNativeAppAddressValid(pConfig->acPeerServerAddress)) {
-        pcInvalid = "peer_server_ip";
     }
     else if ((0U == pConfig->uiPeerPort) ||
              (UINT16_MAX < pConfig->uiPeerPort)) {
@@ -564,8 +663,7 @@ IpsecError_t LoadNativeAppConfigFiles(
 {
     IpsecError_t eError;
 
-    if ((NULL == pcApplicationPath) || (NULL == pcManagementPath) ||
-        (NULL == pConfig)) {
+    if ((NULL == pcApplicationPath) || (NULL == pConfig)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     else {
@@ -574,19 +672,7 @@ IpsecError_t LoadNativeAppConfigFiles(
     eError = LoadNativeAppSettingsFile(
         pcApplicationPath, pConfig, SetNativeAppApplicationSetting,
         pcError, uiErrorLength);
-    if ((IPSEC_OK == eError) &&
-        (NATIVE_APP_ROLE_INITIATOR == pConfig->eRole) &&
-        ('\0' == pConfig->acPeerServerAddress[0])) {
-        if (!CopyNativeAppText(pConfig->acPeerServerAddress,
-                               sizeof(pConfig->acPeerServerAddress),
-                               pConfig->acLocalAddress)) {
-            eError = IPSEC_ERR_BUFFER_TOO_SMALL;
-        }
-        else {
-            /* The initiator listens on its configured local address. */
-        }
-    }
-    if (IPSEC_OK == eError) {
+    if ((IPSEC_OK == eError) && (NULL != pcManagementPath)) {
         pConfig->acIkeProposals[0] = '\0';
         pConfig->acEspProposals[0] = '\0';
         pConfig->eMode = (IpsecMode_t)-1;
@@ -594,8 +680,19 @@ IpsecError_t LoadNativeAppConfigFiles(
             pcManagementPath, pConfig, SetNativeAppManagementSetting,
             pcError, uiErrorLength);
     }
+    else if (IPSEC_OK == eError) {
+        /* The single application file also carries management policy. */
+    }
     else {
         /* Preserve the application configuration error. */
+    }
+    if (IPSEC_OK == eError) {
+        eError = SetNativeAppDefaultTrafficSelector(
+            pConfig->acLocalAddress, pConfig->acLocalTrafficSelector,
+            sizeof(pConfig->acLocalTrafficSelector));
+    }
+    else {
+        /* Preserve the configuration parser error. */
     }
     if (IPSEC_OK == eError) {
         eError = ValidateNativeAppBaseConfig(pConfig, pcError,
@@ -689,20 +786,18 @@ IpsecError_t LoadNativeAppConfig(
         /* Preserve the parser result. */
     }
     (void)fclose(pFile);
-    if ((IPSEC_OK == eError) &&
-        (NATIVE_APP_ROLE_INITIATOR == pConfig->eRole) &&
-        ('\0' == pConfig->acPeerServerAddress[0])) {
-        if (!CopyNativeAppText(pConfig->acPeerServerAddress,
-                               sizeof(pConfig->acPeerServerAddress),
-                               pConfig->acLocalAddress)) {
-            eError = IPSEC_ERR_BUFFER_TOO_SMALL;
-        }
-        else {
-            /* The initiator listens on its configured local address. */
-        }
+    if (IPSEC_OK == eError) {
+        eError = SetNativeAppDefaultTrafficSelector(
+            pConfig->acLocalAddress, pConfig->acLocalTrafficSelector,
+            sizeof(pConfig->acLocalTrafficSelector));
+    }
+    if ((IPSEC_OK == eError) && ('\0' != pConfig->acRemoteAddress[0])) {
+        eError = SetNativeAppDefaultTrafficSelector(
+            pConfig->acRemoteAddress, pConfig->acRemoteTrafficSelector,
+            sizeof(pConfig->acRemoteTrafficSelector));
     }
     else {
-        /* Preserve the parsed peer server address or parser error. */
+        /* A base configuration learns the remote selector from its peer. */
     }
     if (IPSEC_OK == eError) {
         eError = ValidateNativeAppConfig(pConfig, pcError, uiErrorLength);
@@ -852,13 +947,38 @@ static IpsecError_t BuildNativeAppTrafficSelector(
     }
 }
 
+static IpsecError_t ResolveNativeAppTrafficSelector(
+    const char *pcConfiguredSelector,
+    const char *pcAddress,
+    char *pcSelector,
+    uint32_t uiSelectorLength)
+{
+    uint8_t aucAddress[sizeof(struct in6_addr)];
+
+    if ((NULL == pcConfiguredSelector) || (NULL == pcAddress) ||
+        (NULL == pcSelector) || (0U == uiSelectorLength)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    if ('\0' != pcConfiguredSelector[0]) {
+        if (!CopyNativeAppText(pcSelector, uiSelectorLength,
+                               pcConfiguredSelector)) {
+            return IPSEC_ERR_BUFFER_TOO_SMALL;
+        }
+        else {
+            return IPSEC_OK;
+        }
+    }
+    return BuildNativeAppTrafficSelector(
+        pcAddress, (1 == inet_pton(AF_INET, pcAddress, aucAddress)),
+        pcSelector, uiSelectorLength);
+}
+
 IpsecError_t BuildNativeAppRuntimeConfig(
     const NativeAppConfig_t *pConfig,
     NativeAppRuntimeConfig_t *pRuntime,
     char *pcError,
     uint32_t uiErrorLength)
 {
-    uint8_t aucAddress[sizeof(struct in6_addr)];
     uint32_t uiIkeCount = 0U;
     uint32_t uiEspCount = 0U;
     IpsecError_t eError;
@@ -869,15 +989,13 @@ IpsecError_t BuildNativeAppRuntimeConfig(
     else {
         (void)memset(pRuntime, 0, sizeof(*pRuntime));
     }
-    eError = BuildNativeAppTrafficSelector(
-        pConfig->acLocalAddress,
-        (1 == inet_pton(AF_INET, pConfig->acLocalAddress, aucAddress)),
+    eError = ResolveNativeAppTrafficSelector(
+        pConfig->acLocalTrafficSelector, pConfig->acLocalAddress,
         pRuntime->acLocalTrafficSelector,
         sizeof(pRuntime->acLocalTrafficSelector));
     if (IPSEC_OK == eError) {
-        eError = BuildNativeAppTrafficSelector(
-            pConfig->acRemoteAddress,
-            (1 == inet_pton(AF_INET, pConfig->acRemoteAddress, aucAddress)),
+        eError = ResolveNativeAppTrafficSelector(
+            pConfig->acRemoteTrafficSelector, pConfig->acRemoteAddress,
             pRuntime->acRemoteTrafficSelector,
             sizeof(pRuntime->acRemoteTrafficSelector));
     }

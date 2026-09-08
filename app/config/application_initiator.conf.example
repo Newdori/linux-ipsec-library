@@ -1,22 +1,69 @@
+# Select this application's role; allowed values: [initiator|responder].
 role=initiator
+
+# Set this node's IKE/ESP outer endpoint; allowed values: [local IPv4|IPv6 address].
 local_ip=192.168.33.100
+
+# Set this node's inner plaintext traffic selector; allowed values: [IPv4|IPv6 CIDR].
+local_ts=172.16.10.1/32
+
+# Set the controller identity; allowed values: [non-empty token without spaces].
 local_id=rcst-controller
+
+# Select the pre-shared-key file; allowed values: [readable relative|absolute path].
 psk_file=./ipsec_test.psk
+
+# Select the charon VICI socket; allowed values: [unix://PATH|absolute PATH].
 vici_uri=unix:///run/charon.vici
+
+# Set one command deadline; allowed values: [positive seconds].
 command_timeout_sec=60
-peer_port=39002
+
+# Set IKEv2 proposals distributed to peers; allowed values: [strongSwan proposal list].
+ike_proposals=aes256-sha256-prfsha256-modp2048
+
+# Set ESP proposals distributed to peers; allowed values: [strongSwan proposal list].
+esp_proposals=aes256-sha256
+
+# Set CHILD SA mode; allowed values: [tunnel|transport].
+ipsec_mode=tunnel
 
 # Context settings: edit before startup. Backend selection never enables plugins.
+# Select the ESP backend; allowed values: [auto|kernel-libipsec|xfrm].
 datapath_backend=auto
+
+# Select outbound protected-packet delivery; allowed values: [system|application].
 protected_packet_path=system
+
+# Select authenticated plain-packet delivery; allowed values: [system|application].
 plain_packet_path=system
+
+# Select charon's existing TUN; allowed values: [empty for auto-discovery|existing TUN name].
 # kernel_libipsec_tun=charon-tun
+
 # For Protected APPLICATION choose xfrm or kernel-libipsec above.
-# On kernel-libipsec also set management ipsec_mode=tunnel and OS raw_esp=yes.
+# On kernel-libipsec also set ipsec_mode=tunnel and OS raw_esp=yes.
+# Name the non-persistent TUN owned by this library; allowed values: [valid unused interface name].
 # protected_interface=esp-path0
+
+# Select the physical protected-packet egress; allowed values: [existing interface name].
 # protected_egress_interface=eth0
+
+# Optionally lock Protected APPLICATION to one legacy fixed outer pair.
+# Leave both values empty/omitted to derive peer scopes from loaded connections.
 # protected_local_ip=192.168.33.100
+
+# Optionally lock the remote half of the legacy fixed outer pair.
 # protected_remote_ip=192.168.33.101
+
+# Reserve this TC priority pair for connection-specific handles; allowed values: [0..65534, 0 uses 32000].
 # protected_filter_priority=32000
+
 # Plain APPLICATION requires an OS-owned post-decrypt NFQUEUE rule.
+# Select that NFQUEUE; allowed values: [1..65535].
 # plain_queue_number=32002
+
+# Select the OS Netfilter rule hook; allowed values: [input|forward].
+# Use input for packets delivered locally and forward for routed inner traffic.
+# The library binds NFQUEUE but never executes iptables/nft commands.
+# plain_netfilter_hook=input

@@ -117,23 +117,37 @@ Calling a packet API while its corresponding path is `SYSTEM` returns
 
 The implementation reuses the existing scoped TC/TUN mechanism:
 
-1. the application supplies a dedicated physical egress interface and one
-   literal outer IPv4 peer pair;
-2. the OS supplies an empty `clsact` qdisc;
-3. the library creates a non-persistent protected-path TUN;
-4. scoped TC filters redirect matching raw ESP from physical egress to that
+1. the application supplies a dedicated physical egress interface;
+2. each loaded connection supplies one literal local/remote outer IPv4 pair;
+3. the OS supplies an empty `clsact` qdisc;
+4. the library creates a non-persistent protected-path TUN;
+5. connection-scoped TC filters redirect matching raw ESP from physical egress to that
    TUN with stolen semantics, so the packet is not cloned to the NIC;
-5. the receive API reads the complete packet from the TUN;
-6. the submit API validates and writes the inbound packet to the protected TUN.
+6. the receive API reads the complete packet from the TUN;
+7. the submit API validates and writes the inbound packet to the protected TUN.
 
 The library owns only its TUN and reserved filters. It does not add routes,
-addresses, firewall rules, or qdiscs. The two configured TC priorities must be
-reserved exclusively for the context. Stop traffic and terminate affected SAs
-before context destruction; cleanup restores ordinary egress behavior.
+addresses, firewall rules, or qdiscs. The configured TC priority pair and the
+library handle namespace must be reserved for the context. Connection load
+installs a peer filter pair, connection unload removes it, and failed loads are
+rolled back. Stop traffic and terminate affected SAs before context destruction;
+cleanup retries removal of every registered peer filter.
+
+Before bringing its own TUN UP, the library disables IPv6 on that endpoint and
+sets its IPv4 `rp_filter=2` (loose reverse-path validation), then reads it back.
+ESP reinjected through the TUN has a source normally reached through the physical
+NIC; strict reverse-path filtering may drop it before charon receives it. Only
+the exclusively created, non-persistent TUN is changed. Global `all`/`default`,
+the physical NIC, charon's TUN, routes and firewall rules are not modified.
+Failure to configure/verify the setting fails initialization and cleans up the
+owned endpoint. Path-status queries also reject effective strict filtering
+(`max(all, interface)=1`) if another actor changes it later. Loose validation
+still requires a reverse route; it is not an authentication or firewall bypass.
+The per-device setting disappears with the owned TUN on normal teardown.
 
 This first implementation is IPv4 raw ESP only. NAT-T/UDP-encapsulated ESP,
-fragmented outer IPv4, hardware-offloaded XFRM SAs, and 1:N peer scope on one
-protected APPLICATION context are rejected. kernel-libipsec protected delivery
+fragmented outer IPv4 and hardware-offloaded XFRM SAs are rejected. One context
+supports up to 256 connection-scoped peers. kernel-libipsec protected delivery
 requires strongSwan 5.9.11 or newer with the plugin's raw-ESP support enabled.
 These requirements do not apply to a `SYSTEM` protected path.
 
@@ -173,6 +187,12 @@ Plain APPLICATION requires continuous queue draining. Treat an application
 exit, queue overflow, or missing queue consumer as fail-closed packet loss and
 monitor it operationally.
 
+The diagnostic application records the expected rule hook as
+`plain_netfilter_hook=input|forward`. Use `input` when the decrypted inner
+destination is local to the host and `forward` when Linux would route it
+through the host. This setting documents and validates deployment intent; it
+does not create, replace, or delete an OS Netfilter rule.
+
 ## Datapath configuration
 
 ```c
@@ -200,10 +220,12 @@ Protected APPLICATION additionally uses:
 ```text
 acProtectedInterfaceName
 acProtectedEgressInterfaceName
-acProtectedLocalAddress
-acProtectedRemoteAddress
 usProtectedFilterPriority
 ```
+
+Leave `acProtectedLocalAddress` and `acProtectedRemoteAddress` empty for normal
+per-connection scope. Supplying both preserves the legacy single-peer fixed
+scope and rejects a connection whose outer pair differs.
 
 Plain APPLICATION additionally requires:
 
@@ -246,7 +268,21 @@ running and expose VICI. The library never starts or stops it.
 
 ## Diagnostic application
 
-The split example files are under `app/config/`. New packet-path keys are:
+From `app/`, use `-c` for the role-specific configuration and `-v` for verbose
+logging (put startup options before any one-shot command):
+
+```sh
+sudo ./bin/x86_64/ipsec_app -c ./config/initiator.conf -v
+sudo ./bin/x86_64/ipsec_app -c ./config/responder.conf -v
+```
+
+Use the appropriate command on each PC and save the edited role-specific
+example as that `.conf` file first. `--app-config` and `--verbose` remain
+compatibility aliases; `--config` retains the legacy combined-config behavior.
+
+Role-specific example files are under `app/config/`. Each file contains both
+application defaults and the current algorithm policy. The optional
+`management.conf` input remains a legacy override. New packet-path keys are:
 
 ```text
 datapath_backend=auto
@@ -257,12 +293,15 @@ kernel_libipsec_tun=
 # Protected APPLICATION only
 protected_interface=ipsec-path
 protected_egress_interface=eth0
-protected_local_ip=192.0.2.1
-protected_remote_ip=192.0.2.2
 protected_filter_priority=32000
+
+# Optional legacy fixed scope; omit both for peer/connection-derived filters
+# protected_local_ip=192.0.2.1
+# protected_remote_ip=192.0.2.2
 
 # Plain APPLICATION only
 plain_queue_number=32002
+plain_netfilter_hook=input
 ```
 
 No compatibility aliases for previous packet-path names are accepted.
@@ -277,12 +316,195 @@ show packet-path
 packet protected-receive FILE [--timeout-ms N]
 packet protected-submit FILE
 packet plain-receive FILE [--timeout-ms N]
+peer listen port 39002
+peer listen address 192.0.2.10 port 39002
+peer listen show
+peer listen stop
+peer register 192.0.2.10 39002
 ```
 
+Peer registration uses TCP only as a control plane. The initiator and
+responder exchange their IKE/ESP outer endpoint and inner `local_ts`; the TCP
+source address is not treated as the IPsec endpoint. The initiator command
+without an address binds the listener to the wildcard address selected for the
+configured IP family.
+
+The initiator peer table rejects overlapping remote traffic-selector networks
+owned by different peers. The comparison uses IPv4/IPv6 CIDR ranges, so exact
+duplicates and subnet containment are conflicts, while adjacent subnets and
+selectors from different address families are allowed. An active peer must be
+torn down before its remote traffic selector can be changed.
+
 All ordinary connection, credential, IKE, CHILD, rekey, show, loop, and
-algorithm-test commands remain available. Automated traffic-oriented algorithm
-tests are intended for `SYSTEM/SYSTEM`; packet APPLICATION verification is an
-explicit diagnostic workflow.
+algorithm-test commands remain available. Algorithm tests support both
+`SYSTEM/SYSTEM` (existing UDP control/counter verification) and
+`APPLICATION/APPLICATION` (TCP control/ESP relay and decrypted payload comparison).
+Mixed packet paths are still manual diagnostic workflows.
+
+### Session shutdown and ownership
+
+Interactive `quit` and `exit` now perform normal cleanup by default
+(`terminate_on_exit=true`). Stop externally generated test traffic first.
+The app stops its peer listener, rejects new loads/tests, terminates all SA states
+of every connection owned by this session (including connecting/rekeying SAs),
+waits for disappearance, unloads the connections and its daemon PSK credentials,
+then releases the context's owned packet paths and sockets. This also covers
+resources loaded by `up`, `test loop` and algorithm tests, not just the selected
+peer. Pending XFRM reqids are retained across cleanup retries; XFRM is queried,
+never directly deleted by the app/library.
+
+- `down` still cleans only the selected connection and its SAs, retains its
+  credential, and leaves the CLI running. `credential unload` removes that
+  session-owned credential; the PSK file remains untouched.
+- Each shutdown attempt retries a failed peer at most three times, using the
+  configured command/wait timeouts. Peer/stage/error messages identify failures.
+  Failed cleanup leaves the process and remaining paths available for inspection
+  and another `quit`; new registrations, loads, packet/test operations are blocked.
+- `SIGTERM` and input EOF use the same normal cleanup. Ctrl-C cancels the current
+  command. If stdin is permanently closed and cleanup fails, the process stays
+  alive without releasing the remaining paths; resolve the issue externally and
+  send SIGTERM to retry. SIGKILL/crashes/power loss cannot run orderly cleanup.
+- `exit --force` (also `quit --force`) explicitly bypasses cleanup and accepts
+  restoring ordinary NIC egress with possibly remaining daemon state. It is not
+  a successful cleanup or a normal recovery procedure.
+- SYSTEM interactive sessions may explicitly set `terminate_on_exit=false` to
+  detach without daemon cleanup. APPLICATION sessions always require cleanup;
+  this setting cannot disable their safety checks. SYSTEM one-shot commands
+  retain their existing behavior (e.g. `load` must not immediately unload itself).
+
+Ownership is an in-memory, per-session ledger, not a naming-prefix wildcard.
+Pre-existing connection/SA names are not automatically adopted or overwritten
+by `connection load`. Use a different name or explicitly clean the old test
+resources. VICI has no atomic ownership reservation: use exclusive connection
+names and do not let another controller replace them during a session.
+`ike initiate` / `child initiate` require a connection loaded by this session;
+`up` does not silently adopt an existing foreign connection.
+Logical `credential_id` settings remain unchanged, but the daemon credential ID
+is now `ipsec-app-<session-random-id>-<record-index>` to avoid overwriting/removing
+another application's PSK entry. `show credential` displays this non-secret ID.
+No global `clear-creds` is used during automatic shutdown. The existing explicit
+`credential clear all` command remains a daemon-wide operator action.
+
+PSK/config files, results/logs, OS addresses/routes/NFQUEUE rules, charon's TUN
+and service, and other applications' resources are preserved. Protected
+APPLICATION retains a conservative final **all-SA** guard because removing
+diversion can affect a shared egress interface: foreign remaining SAs are listed
+and block exit instead of being deleted. Quiescing external traffic/controllers
+is still required; an app-only check is not a crash-proof OS fail-closed policy.
+
+### Automated APPLICATION packet verification
+
+Use the same updated application on both peers. This is a trusted, isolated lab
+test transport, **not** an authenticated management service or the production
+RF/GSE/RLE transport. It relays complete protected packets only; it does not
+replace charon's encryption, authentication, replay checks, or SA installation.
+
+Prerequisites on **both** PCs:
+
+- `datapath_backend=kernel-libipsec`, `ipsec_mode=tunnel`, and both
+  `protected_packet_path=application` and `plain_packet_path=application`.
+- Working raw IPv4 ESP (no NAT-T), protected TC path, and post-decrypt NFQUEUE
+  rules. The test does not install firewall rules or change OS addresses/routes.
+- Distinct single inner IPv4 host selectors, for example PC-A
+  `local_ts=172.16.10.1/32` and PC-B `local_ts=172.16.20.1/32`. Each local inner
+  address must actually be assigned to its own PC (e.g. on `lo`). Peer registration
+  exchanges the remote selector. Neither inner address may equal either outer
+  endpoint. The library still supports broader selectors; this automatic probe
+  intentionally requires a single host per side to avoid guessing probe sources.
+- With local host probes, use `plain_netfilter_hook=input` and the corresponding
+  INPUT NFQUEUE rule for remote inner source -> local inner destination on the
+  actual charon TUN. FORWARD tests remain separate routed-network diagnostics.
+- TCP `39001` reachable between outer addresses (`--port` overrides it). In
+  APPLICATION mode **both test control and ESP relay use this TCP connection**;
+  UDP test control is not used. Peer registration remains TCP `39002` by default.
+- No other traffic/readers on the tested context/queues. Plain probes use UDP
+  port `48150`, constrained to the discovered charon TUN, never ordinary NIC
+  fallback. Do not run the manual `packet *-receive` commands at the same time.
+
+After registering/selecting the peer, terminate any existing test IKE/CHILD SA
+and unload its connection on **both** PCs before starting. The runner loads the
+credential and per-case connection itself, then performs negotiation and cleanup.
+
+```text
+# PC-B first (responder)
+test algorithm serve
+
+# PC-A (initiator): start with one case and inspect its result
+test algorithm run baseline --limit 1 --stop-on-error
+```
+
+Start `test algorithm serve` again on PC-B before **each** PC-A run:
+
+```text
+test algorithm run baseline --all --stop-on-error
+test algorithm run exhaustive-ike --all --stop-on-error
+test algorithm run exhaustive-esp --all --stop-on-error
+```
+
+For every supported case, the runner sends two 128-byte probe payloads in each
+direction, receives their completed ESP through `ReceiveIpsecProtectedPacket`,
+transfers them over TCP, calls the peer's `SubmitIpsecProtectedPacket`, then
+compares the full decrypted IPv4/UDP framing and payload from
+`ReceiveIpsecPlainPacket`. A fresh per-case nonce and sequence distinguish stale
+or unrelated packets. PASS requires both directions to verify **and** the
+existing IKE/CHILD/install/counter checks to succeed. TCP delivery alone is not
+proof of IPsec success. Unsupported proposals retain their existing classification.
+
+The CLI prints each blocking packet stage and its remaining case data timeout
+(control acknowledgements have a separate bounded 5-second grace). In
+`application_packet.log`, `protected_relay_send` records the TCP send separately
+from peer plaintext verification. `protected_submit` success means the complete
+packet was written to the protected TUN, **not** that charon authenticated or
+decrypted it. The log also records before/after `rp_filter` values, TUN RX/drop
+counters, NFQUEUE queue metadata and bounded IPv4 statistics. These counters
+are host/namespace diagnostics, not exclusive per-test traffic proof.
+Expected INPUT/TUN/inner-address/queue settings are recorded with
+`rule_verified=no`: queue binding does not verify an OS firewall rule.
+No plaintext, ESP contents, PSK or derived keys are dumped.
+
+For a `plain_receive` timeout, compare the post-failure `sa_snapshot.txt`:
+zero inbound CHILD counters warrant checking protected TUN ingress, reverse-path
+filtering, firewall handling and charon ESP/authentication logs first; increased
+inbound counters warrant checking the charon TUN and post-decrypt NFQUEUE path.
+Do not increase the timeout or flush the firewall as a substitute for locating
+the drop. APPLICATION failure reports preserve the first local packet error;
+a peer's echoed ABORT no longer erases it. `application_packet_test.local_error`
+distinguishes local failure from an error received from the peer.
+
+Existing dated result directories and `results.json` are retained (schema 9).
+Each executed packet stage adds `application_packet.log` (elapsed time, stage,
+error and packet metadata), `library_packet.log` (bounded protected-TUN packet
+classification metadata), and `packet_evidence.csv` (one row per attempted
+direction/probe). JSON `application_packet_test` includes the same packet evidence and the
+expected inbound/outbound SPI from the selected CHILD SA. Captured/relayed raw ESP
+must have valid IPv4 framing and the expected SPI; this header check is not an
+independent cryptographic check. Charon remains responsible for authentication
+and decryption. The local post-decrypt packet must match the expected IP/UDP
+addresses, ports, nonce, sequence and all 128 payload bytes.
+
+The library-owned protected TUN disables IPv6 before it is brought up so that
+locally generated IPv6 control traffic is not confused with captured IPv4 RAW
+ESP traffic. `library_packet.log` never stores packet payloads, PSKs, or private
+key material.
+
+The console, run log, per-case `application.log`, `result_summary.txt` and packet log show
+`ESP_CAPTURE`, `ESP_SUBMIT`, `PLAIN_DELIVERY`, `PAYLOAD_MATCH` and an overall
+`proof`. Each check reports PASS/FAIL/NOT_RUN and successes out of two packets.
+NOT_RUN means the stage was never attempted (for example after negotiation
+failed), not a successful check. Overall PASS cannot be derived from SA counters
+alone: all four local probe records and the peer's plaintext acknowledgements
+must be complete. SPI/ESP sequence/packet lengths and boolean outcomes are stored;
+PSKs and plaintext payload dumps are not. Timeouts and
+Ctrl-C are bounded; a broken/partial TCP frame closes the test transport. The
+matrix stops if cleanup cannot be confirmed, even when continuing case failures
+was requested. Inspect and clean the peer before restarting after such a failure.
+
+Manual `protected-receive` creates its file before waiting. If receive fails,
+the retained file may be empty/incomplete and **must not be submitted**. A
+`file read failed` on that file is not a decryption result. The automatic test
+does not use these files and records a receive failure without submitting it.
+An unsupported protected packet is still rejected (not treated as a PASS); the
+library logger now records bounded header metadata before discarding its length.
 
 ## Build
 

@@ -4,13 +4,23 @@
 
 static void HandleNativeAppSignal(int iSignal)
 {
-    (void)iSignal;
-    RequestNativeAppStop();
+    if (SIGTERM == iSignal) {
+        RequestNativeAppExit();
+    }
+    else {
+        RequestNativeAppStop();
+    }
 }
 
 int main(int iArgumentCount, char **ppcArguments)
 {
-    (void)signal(SIGINT, HandleNativeAppSignal);
-    (void)signal(SIGTERM, HandleNativeAppSignal);
+    struct sigaction Action = {0};
+    Action.sa_handler = HandleNativeAppSignal;
+    (void)sigemptyset(&Action.sa_mask);
+    /* Interrupt input/waits so SIGTERM reaches the normal cleanup path. */
+    if ((0 != sigaction(SIGINT, &Action, NULL)) ||
+        (0 != sigaction(SIGTERM, &Action, NULL))) {
+        return 1;
+    }
     return RunNativeAppCli((int32_t)iArgumentCount, ppcArguments);
 }

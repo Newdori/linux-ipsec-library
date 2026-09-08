@@ -1,4 +1,5 @@
 #include "app_internal.h"
+#include "algorithm_packet.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -939,7 +940,7 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             pResult->bPeerCaseKnown ?
                 GetNativeAppAlgorithmErrorText(pResult->ePeerCaseError) :
                 "none",
-            GetNativeAppAlgorithmErrorText(pResult->eError),
+            GetNativeAppAlgorithmErrorText(GetNativeAppAlgorithmCaseError(pResult)),
             GetNativeAppAlgorithmErrorText(pResult->eCleanupError),
             GetNativeAppAlgorithmErrorText(
                 pResult->Cleanup.eTerminateError),
@@ -959,6 +960,13 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             uiConnections, uiIkes,
             uiChildren, uiStates, uiPolicies,
             GetReportOverallResult(pResult->eResult));
+        (void)fprintf(pFile, "application_packet_test=%s\npacket_stage=%s\n"
+            "packet_sent_verified=%" PRIu32 "\npacket_received_verified=%" PRIu32
+            "\npacket_error=%s\n",
+            pResult->PacketTest.bAttempted ? "yes" : "no", pResult->PacketTest.acStage,
+            pResult->PacketTest.uiSent, pResult->PacketTest.uiReceived,
+            GetNativeAppAlgorithmErrorText(pResult->PacketTest.eError));
+        (void)WriteNativeAppPacketEvidenceText(pFile, &pResult->PacketTest);
         (void)fclose(pFile);
     }
     pFile = OpenReportFile(pcCaseDirectory, "ike_result.txt", "w");
@@ -1079,6 +1087,7 @@ IpsecError_t FinishNativeAppAlgorithmCaseReport(
             pResult->Cleanup.uiPeerAttempts,
             pResult->Cleanup.bRecovered ? "yes" : "no",
             pResult->Cleanup.bLocalVerified ? "yes" : "no");
+        (void)WriteNativeAppPacketEvidenceText(pFile, &pResult->PacketTest);
         (void)fclose(pFile);
     }
     pFile = OpenReportFile(pcResultDirectory, "matrix_summary.csv", "a");
