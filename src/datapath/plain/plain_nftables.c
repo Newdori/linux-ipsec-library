@@ -164,7 +164,10 @@ static IpsecError_t AppendPlainNftData(struct nlmsghdr *pHeader,
 static IpsecError_t AppendPlainNftMetaInterface(struct nlmsghdr *pHeader,
     size_t zCapacity, uint32_t uiInterfaceIndex)
 {
-    uint32_t uiNetworkIndex = htonl(uiInterfaceIndex);
+    /* NFT_META_IIF is stored in the nftables register as a native-endian
+     * uint32_t. Unlike IPv4 payload fields, the comparison value must not be
+     * converted to network byte order. */
+    uint32_t uiNativeIndex = uiInterfaceIndex;
     size_t zElement;
     size_t zData;
     IpsecError_t eError = BeginPlainNftExpression(pHeader, zCapacity,
@@ -193,7 +196,7 @@ static IpsecError_t AppendPlainNftMetaInterface(struct nlmsghdr *pHeader,
     }
     if (IPSEC_OK == eError) {
         eError = AppendPlainNftData(pHeader, zCapacity, NFTA_CMP_DATA,
-            &uiNetworkIndex, sizeof(uiNetworkIndex));
+            &uiNativeIndex, sizeof(uiNativeIndex));
     }
     if (IPSEC_OK == eError) {
         FinishPlainNftExpression(pHeader, zElement, zData);

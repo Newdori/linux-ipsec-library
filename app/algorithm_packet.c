@@ -400,7 +400,8 @@ static void RecordNativeAppProbeIngressDiagnostics(NativeAppProbeSession_t *pSes
     uint32_t uiIndex;
     (void)fprintf(pSession->pLog, "ingress_diagnostics phase=%s "
         "protected_ready=%s plain_queue_bound=%s\n"
-        "expected_nfqueue hook=%s interface=%s source=%s destination=%s "
+        "expected_nfqueue hook=%s interface=%s ifindex=%" PRIu32
+        " source=%s destination=%s "
         "queue=%u rule_install_ack=%s owner=%s\n"
         "protected_submit proves TUN write only, not charon reception/decryption; "
         "compare post-failure sa_snapshot.txt inbound counters\n",
@@ -410,6 +411,7 @@ static void RecordNativeAppProbeIngressDiagnostics(NativeAppProbeSession_t *pSes
          pSession->pConfig->Datapath.ePlainNetfilterHook) ?
             "FORWARD" : "INPUT",
         pSession->Paths.acPlainInterfaceName,
+        pSession->Paths.uiPlainInterfaceIndex,
         pSession->pConfig->acRemoteTrafficSelector,
         pSession->pConfig->acLocalTrafficSelector,
         pSession->Paths.usPlainQueueNumber,
