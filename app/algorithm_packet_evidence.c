@@ -3,6 +3,14 @@
 #include <inttypes.h>
 #include <string.h>
 
+bool ShouldStopNativeAppPacketFailure(const NativeAppAlgorithmCaseResult_t *pResult,
+    bool bContinueOnDataPathError)
+{
+    return (NULL != pResult) && !bContinueOnDataPathError &&
+        pResult->PacketTest.bAttempted &&
+        (NATIVE_APP_ALGORITHM_RESULT_FAIL_DATA_PATH == pResult->eResult);
+}
+
 IpsecError_t GetNativeAppAlgorithmCaseError(const NativeAppAlgorithmCaseResult_t *pResult)
 {
     if (NULL == pResult) {

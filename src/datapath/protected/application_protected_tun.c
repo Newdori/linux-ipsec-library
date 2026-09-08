@@ -7,6 +7,7 @@
 #include <linux/if.h>
 #include <linux/if_arp.h>
 #include <linux/if_tun.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -132,6 +133,63 @@ static IpsecError_t ConfigureProtectedApplicationReversePath(
         eError = IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
     }
     return eError;
+}
+
+static IpsecError_t ConfigureProtectedApplicationAddress(
+    const IpsecProtectedApplicationState_t *pState, int32_t iSocket,
+    bool bConfigure)
+{
+    struct ifreq Request;
+    struct sockaddr_in Address = {0};
+    const uint8_t aucLoopback[4] = {127U, 0U, 0U, 1U};
+    const uint8_t aucMask[4] = {255U, 255U, 255U, 255U};
+    if (!ResolveProtectedApplicationTunName(pState, &Request)) {
+        return IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
+    }
+    /* Linux fib_validate_source rejects an unnumbered ingress device even
+     * with loose RPF when the reverse route uses another device. Give only
+     * our private TUN a host-scoped loopback /32 anchor. It is NOT an ESP/TS
+     * address. Do not duplicate the physical IP, route peers into this TUN,
+     * enable route_localnet, or disable global reverse-path validation.
+     * Linux assigns loopback addresses RT_SCOPE_HOST (no connected prefix).
+     * Closing the non-persistent TUN removes its address/local route. */
+    if (bConfigure) {
+        if (0 == ioctl(iSocket, SIOCGIFADDR, &Request)) {
+            /* Do not replace an address installed by another actor. */
+            return IPSEC_ERR_RESOURCE_CONFLICT;
+        }
+        if (EADDRNOTAVAIL != errno) {
+            return MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+        }
+        SetProtectedApplicationIfreqName(&Request, pState->acTunName);
+        Address.sin_family = AF_INET;
+        memcpy(&Address.sin_addr, aucLoopback, sizeof(aucLoopback));
+        memcpy(&Request.ifr_addr, &Address, sizeof(Address));
+        if (0 != ioctl(iSocket, SIOCSIFADDR, &Request)) {
+            return MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+        }
+        memcpy(&Address.sin_addr, aucMask, sizeof(aucMask));
+        memcpy(&Request.ifr_netmask, &Address, sizeof(Address));
+        if (0 != ioctl(iSocket, SIOCSIFNETMASK, &Request)) {
+            return MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+        }
+    }
+    SetProtectedApplicationIfreqName(&Request, pState->acTunName);
+    if (0 != ioctl(iSocket, SIOCGIFADDR, &Request)) {
+        return MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+    }
+    memcpy(&Address, &Request.ifr_addr, sizeof(Address));
+    if ((AF_INET != Address.sin_family) ||
+        (0 != memcmp(&Address.sin_addr, aucLoopback, sizeof(aucLoopback)))) {
+        return IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
+    }
+    if (0 != ioctl(iSocket, SIOCGIFNETMASK, &Request)) {
+        return MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+    }
+    memcpy(&Address, &Request.ifr_netmask, sizeof(Address));
+    return ((AF_INET == Address.sin_family) &&
+        (0 == memcmp(&Address.sin_addr, aucMask, sizeof(aucMask)))) ?
+        IPSEC_OK : IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
 }
 
 static IpsecError_t DisableProtectedApplicationIpv6(
@@ -293,6 +351,14 @@ IpsecError_t CreateIpsecProtectedApplicationEndpoint(IpsecContext_t *pContext, I
                             pState->acTunName, GetIpsecErrorString(eError));
                     }
                     if (IPSEC_OK == eError) {
+                        eError = ConfigureProtectedApplicationAddress(pState, iSocket, true);
+                        if (IPSEC_OK != eError) {
+                            LogIpsec(pContext, IPSEC_LOG_ERROR,
+                                "protected TUN %s: cannot initialize/verify host-scoped IPv4 /32 anchor: %s",
+                                pState->acTunName, GetIpsecErrorString(eError));
+                        }
+                    }
+                    if (IPSEC_OK == eError) {
                         Request.ifr_flags = IFF_UP;
                         if (0 != ioctl(iSocket, SIOCSIFFLAGS, &Request)) {
                             eError = MapProtectedApplicationError(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
@@ -333,6 +399,9 @@ IpsecError_t InspectIpsecProtectedApplicationEndpoint(const IpsecProtectedApplic
             (0 == (Request.ifr_flags & IFF_UP))) {
             eError = IPSEC_ERR_INTERFACE_NOT_FOUND;
         }
+    }
+    if (IPSEC_OK == eError) {
+        eError = ConfigureProtectedApplicationAddress(pState, iSocket, false);
     }
     (void)close(iSocket);
     if (IPSEC_OK == eError) {

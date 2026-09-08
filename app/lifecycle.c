@@ -390,8 +390,9 @@ IpsecError_t WaitNativeAppRemovedWithTimeout(
     else {
         /* Poll resources supported by the detected datapath. */
     }
-    while ((uiElapsed <= uiTimeoutMs) &&
-           (0 == gbNativeAppStopRequested)) {
+    /* Always query once, including timeout=0 and Ctrl-C cleanup. A stop
+     * request is not evidence that resources still exist or VICI timed out. */
+    while (uiElapsed <= uiTimeoutMs) {
         IpsecIkeSaList_t IkeList = {0};
         IpsecChildSaList_t ChildList = {0};
         IpsecXfrmStateList_t StateList = {0};
@@ -460,6 +461,12 @@ IpsecError_t WaitNativeAppRemovedWithTimeout(
         }
         else if (!bPresent) {
             return IPSEC_OK;
+        }
+        else if (0 != gbNativeAppStopRequested) {
+            return IPSEC_ERR_CANCELLED;
+        }
+        else if ((uiTimeoutMs - uiElapsed) < 100U) {
+            break;
         }
         else {
             SleepNativeApp(100U);

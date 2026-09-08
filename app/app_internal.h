@@ -452,6 +452,7 @@ typedef struct NativeAppAlgorithmOptions {
     const char *pcCustomIke;
     const char *pcCustomEsp;
     bool bContinueOnError;
+    bool bContinueOnDataPathError;
 } NativeAppAlgorithmOptions_t;
 
 const char *GetNativeAppAlgorithmResultName(

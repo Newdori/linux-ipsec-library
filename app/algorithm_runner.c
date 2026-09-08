@@ -2510,6 +2510,14 @@ IpsecError_t RunNativeAppAlgorithmClient(
         if ((IPSEC_OK != eError) && !pOptions->bContinueOnError) {
             break;
         }
+        if (ShouldStopNativeAppPacketFailure(&Result,
+                pOptions->bContinueOnDataPathError)) {
+            ReportNativeAppAlgorithm(pLog, stdout, "FAIL",
+                "matrix stopped: APPLICATION packet path failed; result files retained. "
+                "Repair the path and retry --limit 1 before --all. "
+                "Use --continue-on-error only to intentionally repeat packet failures.");
+            break;
+        }
         if ((0U < pOptions->uiDelayMs) &&
             ((uiOffset + 1U) < uiRequested)) {
             SleepNativeAppAlgorithm(pOptions->uiDelayMs);

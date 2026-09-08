@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
+#include <netinet/in.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,11 @@ static int32_t giFailure;
 static bool gbReadInterrupted;
 static bool gbWriteInterrupted;
 static char gacActualName[IFNAMSIZ];
+static bool gbAddressAssigned;
+static uint32_t guiAddressWrites;
+static int32_t giAddressFailure;
+static struct sockaddr_in gAddress;
+static struct sockaddr_in gMask;
 
 static int32_t OpenTestTunPath(const char *pcPath, int32_t iFlags, ...)
 {
@@ -120,11 +126,55 @@ static int32_t QueryTestTun(int32_t iFd, uint64_t ullRequest, ...)
 {
     va_list Arguments;
     struct ifreq *pRequest;
-    CHECK(7 == iFd);
-    CHECK(TUNGETIFF == ullRequest);
     va_start(Arguments, ullRequest);
     pRequest = va_arg(Arguments, struct ifreq *);
     va_end(Arguments);
+    if (8 == iFd) {
+        CHECK(0 == strcmp(pRequest->ifr_name, "esp-test0"));
+        if (SIOCGIFADDR == ullRequest) {
+            if (1 == giAddressFailure) {
+                errno = EACCES;
+                return -1;
+            }
+            if (!gbAddressAssigned) {
+                errno = EADDRNOTAVAIL;
+                return -1;
+            }
+            memcpy(&pRequest->ifr_addr, &gAddress, sizeof(gAddress));
+            return 0;
+        }
+        if ((SIOCSIFADDR == ullRequest) || (SIOCSIFNETMASK == ullRequest)) {
+            guiAddressWrites++;
+            if (((SIOCSIFADDR == ullRequest) && (2 == giAddressFailure)) ||
+                ((SIOCSIFNETMASK == ullRequest) && (3 == giAddressFailure))) {
+                errno = EPERM;
+                return -1;
+            }
+            if (SIOCSIFADDR == ullRequest) {
+                memcpy(&gAddress, &pRequest->ifr_addr, sizeof(gAddress));
+                gbAddressAssigned = true;
+                if (4 == giAddressFailure) {
+                    gAddress.sin_family = AF_INET6;
+                }
+            }
+            else {
+                memcpy(&gMask, &pRequest->ifr_netmask, sizeof(gMask));
+                if (5 == giAddressFailure) {
+                    memset(&gMask.sin_addr, 0, sizeof(gMask.sin_addr));
+                }
+            }
+            return 0;
+        }
+        CHECK(SIOCGIFNETMASK == ullRequest);
+        if (6 == giAddressFailure) {
+            errno = ENODEV;
+            return -1;
+        }
+        memcpy(&pRequest->ifr_netmask, &gMask, sizeof(gMask));
+        return 0;
+    }
+    CHECK(7 == iFd);
+    CHECK(TUNGETIFF == ullRequest);
     memcpy(pRequest->ifr_name, gacActualName, IFNAMSIZ);
     pRequest->ifr_flags = IFF_TUN;
     if (7 == giFailure) {
@@ -150,6 +200,32 @@ static int32_t QueryTestTun(int32_t iFd, uint64_t ullRequest, ...)
 #undef write
 #undef ioctl
 
+static void VerifyTestTunAddress(IpsecProtectedApplicationState_t *pState)
+{
+    const uint8_t aucExpected[4] = {127U, 0U, 0U, 1U};
+    giFailure = 0;
+    for (giAddressFailure = 0; giAddressFailure <= 6; giAddressFailure++) {
+        IpsecError_t eExpected = (0 == giAddressFailure) ? IPSEC_OK :
+            ((giAddressFailure <= 3) ? IPSEC_ERR_PERMISSION :
+             IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE);
+        gbAddressAssigned = false;
+        guiAddressWrites = 0U;
+        CHECK(eExpected == ConfigureProtectedApplicationAddress(pState, 8, true));
+        if (0 == giAddressFailure) {
+            CHECK(2U == guiAddressWrites);
+            CHECK(0 == memcmp(&gAddress.sin_addr, aucExpected, sizeof(aucExpected)));
+            CHECK(IPSEC_OK == ConfigureProtectedApplicationAddress(pState, 8, false));
+            CHECK(IPSEC_ERR_RESOURCE_CONFLICT ==
+                ConfigureProtectedApplicationAddress(pState, 8, true));
+            CHECK(2U == guiAddressWrites); /* Inspect and conflict never write. */
+            gbAddressAssigned = false; /* Lost anchor fails readiness. */
+            CHECK(IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE ==
+                ConfigureProtectedApplicationAddress(pState, 8, false));
+        }
+    }
+    giAddressFailure = 0;
+}
+
 int main(void)
 {
     IpsecProtectedApplicationState_t State = {.iTunFd = 7};
@@ -160,6 +236,7 @@ int main(void)
     size_t zIndex;
     memcpy(State.acTunName, "esp-test0", sizeof("esp-test0"));
     memcpy(gacActualName, State.acTunName, sizeof("esp-test0"));
+    VerifyTestTunAddress(&State);
     for (uiAll = 0U; uiAll <= 2U; uiAll++) {
         for (uiOwned = 0U; uiOwned <= 2U; uiOwned++) {
             guiAll = uiAll;
@@ -216,6 +293,6 @@ int main(void)
             ConfigureProtectedApplicationReversePath(&State, true));
         CHECK(0 == giOpenCount);
     }
-    (void)puts("protected TUN rp_filter ownership/failure paths: PASS");
+    (void)puts("protected TUN IPv4 anchor/rp_filter ownership/failure paths: PASS");
     return 0;
 }
