@@ -348,6 +348,21 @@ void CloseIpsecPlainQueue(IpsecPlainApplicationState_t *pState)
     guiPlainCleanup++;
 }
 
+IpsecError_t InitializeIpsecPlainRules(IpsecContext_t *pContext,
+    IpsecPlainApplicationState_t *pState)
+{
+    (void)pContext;
+    (void)pState;
+    return IPSEC_OK;
+}
+
+void DeinitializeIpsecPlainRules(IpsecContext_t *pContext,
+    IpsecPlainApplicationState_t *pState)
+{
+    (void)pContext;
+    (void)pState;
+}
+
 IpsecError_t ReceiveIpsecPlainQueuePacket(IpsecPlainApplicationState_t *pState,
     IpsecPlainPacket_t *pPacket, uint32_t uiTimeoutMs)
 {

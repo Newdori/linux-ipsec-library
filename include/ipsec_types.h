@@ -105,6 +105,11 @@ typedef enum IpsecPacketPathMode {
     IPSEC_PACKET_PATH_APPLICATION
 } IpsecPacketPathMode_t;
 
+typedef enum IpsecPlainNetfilterHook {
+    IPSEC_PLAIN_NETFILTER_INPUT = 0,
+    IPSEC_PLAIN_NETFILTER_FORWARD
+} IpsecPlainNetfilterHook_t;
+
 #define IPSEC_DATAPATH_NAME_LENGTH 16U
 #define IPSEC_PROTECTED_PACKET_CAPACITY 65535U
 
@@ -130,11 +135,14 @@ typedef struct IpsecDatapathConfig {
      * must prevent concurrent changes in this reserved priority namespace.
      */
     uint16_t usProtectedFilterPriority;
-    /* Plain APPLICATION binds this pre-provisioned NFQUEUE. Zero is invalid
-     * in APPLICATION mode so accidental queue capture cannot be enabled.
-     * The OS rule must select post-decrypt inbound packets only.
+    /* Plain APPLICATION binds this NFQUEUE. Zero is invalid in APPLICATION
+     * mode. If bManagePlainNetfilterRule is true, the library owns a dedicated
+     * nftables table and installs one post-decrypt rule per loaded connection.
+     * Otherwise the OS must provision equivalent rules before packet receive.
      */
     uint16_t usPlainQueueNumber;
+    IpsecPlainNetfilterHook_t ePlainNetfilterHook;
+    bool bManagePlainNetfilterRule;
 } IpsecDatapathConfig_t;
 
 typedef enum IpsecProtectedPacketType {

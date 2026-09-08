@@ -1,5 +1,6 @@
 #include "algorithm_packet.h"
 
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -12,6 +13,12 @@
 } } while (0)
 
 static atomic_bool gbStop;
+
+typedef struct TestStreamServer {
+    const NativeAppConfig_t *pConfig;
+    int32_t iListener;
+    uint32_t uiCount;
+} TestStreamServer_t;
 
 bool IsNativeAppStopRequested(void)
 {
@@ -31,6 +38,81 @@ static void *SendTestFragments(void *pvSocket)
         (void)nanosleep(&Delay, NULL);
     }
     return NULL;
+}
+
+static void *RunTestStreamServer(void *pvContext)
+{
+    TestStreamServer_t *pServer = (TestStreamServer_t *)pvContext;
+    uint32_t uiIndex;
+
+    for (uiIndex = 0U; uiIndex < pServer->uiCount; uiIndex++) {
+        uint8_t aucData[16];
+        size_t zLength = 0U;
+        int32_t iSocket = -1;
+        IpsecError_t eError = AcceptNativeAppAlgorithmStream(
+            pServer->pConfig, pServer->iListener, &iSocket);
+
+        if (IPSEC_OK == eError) {
+            eError = ReceiveNativeAppTestFrame(
+                iSocket, aucData, sizeof(aucData), &zLength,
+                GetNativeAppPacketTestTime() + 2000U);
+        }
+        if (IPSEC_OK == eError) {
+            eError = SendNativeAppTestFrame(
+                iSocket, aucData, zLength,
+                GetNativeAppPacketTestTime() + 2000U);
+        }
+        if (0 <= iSocket) {
+            (void)close(iSocket);
+        }
+        if (IPSEC_OK != eError) {
+            return (void *)(uintptr_t)1U;
+        }
+    }
+    return NULL;
+}
+
+static int32_t VerifySequentialTestStreams(void)
+{
+    NativeAppConfig_t Config = {0};
+    TestStreamServer_t Server = {.pConfig = &Config, .uiCount = 64U};
+    struct sockaddr_in Address;
+    socklen_t zAddressLength = sizeof(Address);
+    pthread_t Thread;
+    void *pvResult = NULL;
+    uint32_t uiIndex;
+
+    memcpy(Config.acLocalAddress, "127.0.0.1", sizeof("127.0.0.1"));
+    memcpy(Config.acRemoteAddress, "127.0.0.1", sizeof("127.0.0.1"));
+    Config.uiTimeoutMs = 2000U;
+    CHECK(IPSEC_OK == OpenNativeAppAlgorithmListener(
+        &Config, 0U, &Server.iListener));
+    CHECK(0 == getsockname(Server.iListener,
+        (struct sockaddr *)&Address, &zAddressLength));
+    CHECK((sizeof(Address) == zAddressLength) && (0U != ntohs(Address.sin_port)));
+    CHECK(0 == pthread_create(&Thread, NULL, RunTestStreamServer, &Server));
+    for (uiIndex = 0U; uiIndex < Server.uiCount; uiIndex++) {
+        const uint8_t aucExpected[] = {'c', 'a', 's', 'e'};
+        uint8_t aucActual[16];
+        size_t zLength = 0U;
+        int32_t iSocket = -1;
+
+        CHECK(IPSEC_OK == ConnectNativeAppAlgorithmStream(
+            &Config, (uint32_t)ntohs(Address.sin_port), &iSocket));
+        CHECK(IPSEC_OK == SendNativeAppTestFrame(
+            iSocket, aucExpected, sizeof(aucExpected),
+            GetNativeAppPacketTestTime() + 2000U));
+        CHECK(IPSEC_OK == ReceiveNativeAppTestFrame(
+            iSocket, aucActual, sizeof(aucActual), &zLength,
+            GetNativeAppPacketTestTime() + 2000U));
+        CHECK((sizeof(aucExpected) == zLength) &&
+            (0 == memcmp(aucExpected, aucActual, zLength)));
+        CHECK(0 == close(iSocket));
+    }
+    CHECK(0 == pthread_join(Thread, &pvResult));
+    CHECK(NULL == pvResult);
+    CHECK(0 == close(Server.iListener));
+    return 0;
 }
 
 int main(void)
@@ -55,9 +137,9 @@ int main(void)
     Config.acRemoteTrafficSelector[12] = '4';
     CHECK(IPSEC_ERR_INVALID_ARGUMENT == ValidateNativeAppAlgorithmPacketConfig(&Config));
     Config.acRemoteTrafficSelector[12] = '3';
-    Config.ePlainNetfilterHook = NATIVE_APP_PLAIN_NETFILTER_FORWARD;
+    Config.Datapath.ePlainNetfilterHook = IPSEC_PLAIN_NETFILTER_FORWARD;
     CHECK(IPSEC_ERR_INVALID_ARGUMENT == ValidateNativeAppAlgorithmPacketConfig(&Config));
-    Config.ePlainNetfilterHook = NATIVE_APP_PLAIN_NETFILTER_INPUT;
+    Config.Datapath.ePlainNetfilterHook = IPSEC_PLAIN_NETFILTER_INPUT;
     memcpy(Config.acLocalTrafficSelector, "192.168.33.100/32", sizeof("192.168.33.100/32"));
     CHECK(IPSEC_ERR_INVALID_ARGUMENT == ValidateNativeAppAlgorithmPacketConfig(&Config));
     CHECK(0 == socketpair(AF_UNIX, SOCK_STREAM, 0, aiSockets));
@@ -97,6 +179,7 @@ int main(void)
     CHECK(IPSEC_ERR_VICI_TRANSPORT == ReceiveNativeAppTestFrame(aiSockets[1], aucData,
         sizeof(aucData), &zLength, GetNativeAppPacketTestTime() + 1000U));
     CHECK(0 == close(aiSockets[1]));
+    CHECK(0 == VerifySequentialTestStreams());
     atomic_store(&gbStop, true);
     CHECK(IPSEC_ERR_CANCELLED == ReceiveNativeAppTestFrame(-1, aucData,
         sizeof(aucData), &zLength, GetNativeAppPacketTestTime() + 1000U));

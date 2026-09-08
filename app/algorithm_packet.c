@@ -12,6 +12,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#define NATIVE_APP_STREAM_CONNECT_MAX_MS   5000U
+#define NATIVE_APP_STREAM_CONNECT_RETRY_MS  100U
+
 uint64_t GetNativeAppPacketTestTime(void)
 {
     struct timespec Time;
@@ -175,7 +178,8 @@ IpsecError_t ValidateNativeAppAlgorithmPacketConfig(const NativeAppConfig_t *pCo
         return IPSEC_OK;
     }
     if ((IPSEC_MODE_TUNNEL != pConfig->eMode) ||
-        (NATIVE_APP_PLAIN_NETFILTER_INPUT != pConfig->ePlainNetfilterHook) ||
+        (IPSEC_PLAIN_NETFILTER_INPUT !=
+         pConfig->Datapath.ePlainNetfilterHook) ||
         !ParseNativeAppTestAddress(pConfig->acLocalAddress, &Local, false) ||
         !ParseNativeAppTestAddress(pConfig->acRemoteAddress, &Remote, false) ||
         !ParseNativeAppTestAddress(pConfig->acLocalTrafficSelector, &LocalTs, true) ||
@@ -188,27 +192,23 @@ IpsecError_t ValidateNativeAppAlgorithmPacketConfig(const NativeAppConfig_t *pCo
     return IPSEC_OK;
 }
 
-IpsecError_t OpenNativeAppAlgorithmStream(const NativeAppConfig_t *pConfig,
-    uint32_t uiPort, bool bServer, int32_t *piSocket)
+IpsecError_t OpenNativeAppAlgorithmListener(const NativeAppConfig_t *pConfig,
+    uint32_t uiPort, int32_t *piListener)
 {
     struct sockaddr_in Local = {.sin_family = AF_INET};
-    struct sockaddr_in Remote = {.sin_family = AF_INET};
     int32_t iSocket;
     int32_t iReuse = 1;
     IpsecError_t eError = IPSEC_OK;
-    uint64_t ullDeadline;
-    if ((NULL == pConfig) || (NULL == piSocket)) {
+
+    if ((NULL == pConfig) || (NULL == piListener)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
-    ullDeadline = GetNativeAppPacketTestTime() + pConfig->uiTimeoutMs;
-    *piSocket = -1;
-    if ((0U == uiPort) || (uiPort > UINT16_MAX) ||
-        (1 != inet_pton(AF_INET, pConfig->acLocalAddress, &Local.sin_addr)) ||
-        (1 != inet_pton(AF_INET, pConfig->acRemoteAddress, &Remote.sin_addr))) {
+    *piListener = -1;
+    if ((uiPort > UINT16_MAX) ||
+        (1 != inet_pton(AF_INET, pConfig->acLocalAddress, &Local.sin_addr))) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
-    Local.sin_port = bServer ? htons((uint16_t)uiPort) : 0U;
-    Remote.sin_port = htons((uint16_t)uiPort);
+    Local.sin_port = htons((uint16_t)uiPort);
     iSocket = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (iSocket < 0) {
         return IPSEC_ERR_INTERNAL;
@@ -217,79 +217,162 @@ IpsecError_t OpenNativeAppAlgorithmStream(const NativeAppConfig_t *pConfig,
         (0 != bind(iSocket, (const struct sockaddr *)&Local, sizeof(Local)))) {
         eError = IPSEC_ERR_INTERNAL;
     }
-    else if (bServer) {
-        if (0 != listen(iSocket, 4)) {
-            eError = IPSEC_ERR_INTERNAL;
-        }
-        (void)printf("APPLICATION algorithm server: TCP %s:%" PRIu32
-            " waiting for %s (Ctrl-C cancels)\n", pConfig->acLocalAddress,
-            uiPort, pConfig->acRemoteAddress);
-        (void)fflush(stdout);
-        while ((IPSEC_OK == eError) && !IsNativeAppStopRequested()) {
-            struct sockaddr_in Sender;
-            socklen_t zLength = sizeof(Sender);
-            int32_t iClient;
-            eError = WaitNativeAppTestSocket(iSocket, POLLIN,
-                GetNativeAppPacketTestTime() + 500U);
-            if (IPSEC_ERR_PACKET_TIMEOUT == eError) {
-                eError = IPSEC_OK;
-                continue;
-            }
-            if (IPSEC_OK != eError) {
-                break;
-            }
-            iClient = accept(iSocket, (struct sockaddr *)&Sender, &zLength);
-            if (iClient < 0) {
-                if ((EINTR == errno) || (EAGAIN == errno)) {
-                    continue;
-                }
-                eError = IPSEC_ERR_INTERNAL;
-                break;
-            }
-            if ((sizeof(Sender) != zLength) || (AF_INET != Sender.sin_family) ||
-                (Remote.sin_addr.s_addr != Sender.sin_addr.s_addr)) {
-                (void)close(iClient);
-                continue;
-            }
-            if (0 != fcntl(iClient, F_SETFD, FD_CLOEXEC)) {
-                (void)close(iClient);
-                eError = IPSEC_ERR_INTERNAL;
-                break;
-            }
-            (void)close(iSocket);
-            *piSocket = iClient;
-            return IPSEC_OK;
-        }
-        if (IsNativeAppStopRequested()) {
-            eError = IPSEC_ERR_CANCELLED;
-        }
+    else if (0 != listen(iSocket, 4)) {
+        eError = IPSEC_ERR_INTERNAL;
     }
     else {
-        if (0 != connect(iSocket, (const struct sockaddr *)&Remote, sizeof(Remote))) {
-            if (EINPROGRESS != errno) {
-                eError = IPSEC_ERR_VICI_TRANSPORT;
-            }
-            else {
-                int32_t iError = 0;
-                socklen_t zLength = sizeof(iError);
-                eError = WaitNativeAppTestSocket(iSocket, POLLOUT, ullDeadline);
-                if ((IPSEC_OK == eError) &&
-                    ((0 != getsockopt(iSocket, SOL_SOCKET, SO_ERROR, &iError, &zLength)) ||
-                     (0 != iError))) {
-                    eError = IPSEC_ERR_VICI_TRANSPORT;
-                }
-            }
+        *piListener = iSocket;
+        return IPSEC_OK;
+    }
+    (void)close(iSocket);
+    return eError;
+}
+
+IpsecError_t AcceptNativeAppAlgorithmStream(const NativeAppConfig_t *pConfig,
+    int32_t iListener, int32_t *piSocket)
+{
+    struct in_addr Remote;
+    IpsecError_t eError = IPSEC_OK;
+
+    if ((NULL == pConfig) || (NULL == piSocket) || (0 > iListener) ||
+        (1 != inet_pton(AF_INET, pConfig->acRemoteAddress, &Remote))) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    *piSocket = -1;
+    while (!IsNativeAppStopRequested()) {
+        struct sockaddr_in Sender;
+        socklen_t zLength = sizeof(Sender);
+        int32_t iClient;
+
+        eError = WaitNativeAppTestSocket(iListener, POLLIN,
+            GetNativeAppPacketTestTime() + 500U);
+        if (IPSEC_ERR_PACKET_TIMEOUT == eError) {
+            continue;
         }
-        if (IPSEC_OK == eError) {
+        if (IPSEC_OK != eError) {
+            return eError;
+        }
+        iClient = accept(iListener, (struct sockaddr *)&Sender, &zLength);
+        if (iClient < 0) {
+            if ((EINTR == errno) || (EAGAIN == errno)) {
+                continue;
+            }
+            return IPSEC_ERR_INTERNAL;
+        }
+        if ((sizeof(Sender) != zLength) || (AF_INET != Sender.sin_family) ||
+            (Remote.s_addr != Sender.sin_addr.s_addr)) {
+            (void)close(iClient);
+            continue;
+        }
+        if (0 != fcntl(iClient, F_SETFD, FD_CLOEXEC)) {
+            (void)close(iClient);
+            return IPSEC_ERR_INTERNAL;
+        }
+        *piSocket = iClient;
+        return IPSEC_OK;
+    }
+    return IPSEC_ERR_CANCELLED;
+}
+
+IpsecError_t ConnectNativeAppAlgorithmStream(const NativeAppConfig_t *pConfig,
+    uint32_t uiPort, int32_t *piSocket)
+{
+    struct sockaddr_in Local = {.sin_family = AF_INET};
+    struct sockaddr_in Remote = {.sin_family = AF_INET};
+    int32_t iSocket = -1;
+    int32_t iSocketError = 0;
+    int32_t iErrno = 0;
+    uint64_t ullDeadline;
+    uint32_t uiConnectTimeoutMs;
+    IpsecError_t eError = IPSEC_ERR_VICI_TRANSPORT;
+
+    if ((NULL == pConfig) || (NULL == piSocket)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    *piSocket = -1;
+    if ((0U == uiPort) || (uiPort > UINT16_MAX) ||
+        (1 != inet_pton(AF_INET, pConfig->acLocalAddress, &Local.sin_addr)) ||
+        (1 != inet_pton(AF_INET, pConfig->acRemoteAddress, &Remote.sin_addr))) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    Local.sin_port = 0U;
+    Remote.sin_port = htons((uint16_t)uiPort);
+    uiConnectTimeoutMs = (pConfig->uiTimeoutMs <
+        NATIVE_APP_STREAM_CONNECT_MAX_MS) ? pConfig->uiTimeoutMs :
+        NATIVE_APP_STREAM_CONNECT_MAX_MS;
+    if (NATIVE_APP_STREAM_CONNECT_RETRY_MS > uiConnectTimeoutMs) {
+        uiConnectTimeoutMs = NATIVE_APP_STREAM_CONNECT_RETRY_MS;
+    }
+    ullDeadline = GetNativeAppPacketTestTime() + uiConnectTimeoutMs;
+    while (!IsNativeAppStopRequested()) {
+        socklen_t zLength = sizeof(iSocketError);
+        int32_t iConnectResult;
+
+        iSocketError = 0;
+        iSocket = socket(AF_INET,
+            SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+        if (iSocket < 0) {
+            return IPSEC_ERR_INTERNAL;
+        }
+        if (0 != bind(iSocket, (const struct sockaddr *)&Local, sizeof(Local))) {
+            iErrno = errno;
+            (void)close(iSocket);
+            return IPSEC_ERR_INTERNAL;
+        }
+        iConnectResult = connect(iSocket,
+            (const struct sockaddr *)&Remote, sizeof(Remote));
+        if (0 == iConnectResult) {
             *piSocket = iSocket;
             return IPSEC_OK;
         }
+        iErrno = errno;
+        if (EINPROGRESS == iErrno) {
+            eError = WaitNativeAppTestSocket(iSocket, POLLOUT, ullDeadline);
+            if ((IPSEC_OK == eError) &&
+                (0 == getsockopt(iSocket, SOL_SOCKET, SO_ERROR,
+                                 &iSocketError, &zLength)) &&
+                (0 == iSocketError)) {
+                *piSocket = iSocket;
+                return IPSEC_OK;
+            }
+            if (0 != iSocketError) {
+                iErrno = iSocketError;
+            }
+            else {
+                /* Preserve the connect or poll errno snapshot. */
+            }
+        }
+        else {
+            eError = IPSEC_ERR_VICI_TRANSPORT;
+        }
+        (void)close(iSocket);
+        iSocket = -1;
+        if (GetNativeAppPacketTestTime() >= ullDeadline) {
+            break;
+        }
+        else {
+            struct timespec Delay = {
+                .tv_sec = 0,
+                .tv_nsec = (long)NATIVE_APP_STREAM_CONNECT_RETRY_MS *
+                           1000000L};
+
+            while ((0 != nanosleep(&Delay, &Delay)) && (EINTR == errno)) {
+                /* Resume the remaining bounded retry delay. */
+            }
+        }
     }
-    (void)fprintf(stderr, "APPLICATION algorithm TCP setup failed: %s:%" PRIu32
-        " peer=%s error=%s errno=%d; start the updated responder serve command first\n",
+    if (IsNativeAppStopRequested()) {
+        eError = IPSEC_ERR_CANCELLED;
+    }
+    else {
+        eError = IPSEC_ERR_VICI_TRANSPORT;
+    }
+    (void)fprintf(stderr, "APPLICATION algorithm TCP connect failed: %s:%" PRIu32
+        " peer=%s error=%s socket_error=%d errno=%d retry_ms=%" PRIu32
+        "; start responder serve first\n",
         pConfig->acLocalAddress, uiPort, pConfig->acRemoteAddress,
-        GetIpsecErrorString(eError), errno);
-    (void)close(iSocket);
+        GetIpsecErrorString(eError), iSocketError, iErrno,
+        uiConnectTimeoutMs);
     return eError;
 }
 
@@ -399,15 +482,24 @@ static void RecordNativeAppProbeIngressDiagnostics(NativeAppProbeSession_t *pSes
     uint32_t uiIndex;
     (void)fprintf(pSession->pLog, "ingress_diagnostics phase=%s "
         "protected_ready=%s plain_queue_bound=%s\n"
-        "expected_nfqueue hook=INPUT interface=%s source=%s destination=%s "
-        "queue=%u rule_verified=no (OS-managed rule; binding is not rule proof)\n"
+        "expected_nfqueue hook=%s interface=%s ifindex=%" PRIu32
+        " source=%s destination=%s "
+        "queue=%u rule_install_ack=%s owner=%s\n"
         "protected_submit proves TUN write only, not charon reception/decryption; "
         "compare post-failure sa_snapshot.txt inbound counters\n",
         pcPhase, pSession->Paths.bProtectedPathReady ? "yes" : "no",
         pSession->Paths.bPlainPathReady ? "yes" : "no",
+        (IPSEC_PLAIN_NETFILTER_FORWARD ==
+         pSession->pConfig->Datapath.ePlainNetfilterHook) ?
+            "FORWARD" : "INPUT",
         pSession->Paths.acPlainInterfaceName,
+        pSession->Paths.uiPlainInterfaceIndex,
         pSession->pConfig->acRemoteTrafficSelector,
-        pSession->pConfig->acLocalTrafficSelector, pSession->Paths.usPlainQueueNumber);
+        pSession->pConfig->acLocalTrafficSelector,
+        pSession->Paths.usPlainQueueNumber,
+        pSession->pConfig->Datapath.bManagePlainNetfilterRule ? "yes" : "no",
+        pSession->pConfig->Datapath.bManagePlainNetfilterRule ?
+            "library" : "OS");
     RecordNativeAppProbeProcFile(pSession->pLog, "/proc/sys/net/ipv4/conf/all/rp_filter");
     for (uiIndex = 0U; uiIndex < 2U; uiIndex++) {
         const char *pcName = pacInterfaces[uiIndex];
@@ -727,7 +819,9 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
     pResult->uiExpectedInboundSpi = uiInboundSpi;
     pResult->uiExpectedOutboundSpi = uiOutboundSpi;
     Session.ullStarted = GetNativeAppPacketTestTime();
-    Session.ullDeadline = Session.ullStarted + pConfig->uiTimeoutMs;
+    Session.ullDeadline = Session.ullStarted +
+        ((pConfig->uiTimeoutMs < NATIVE_APP_PACKET_TEST_TIMEOUT_MS) ?
+            pConfig->uiTimeoutMs : NATIVE_APP_PACKET_TEST_TIMEOUT_MS);
     iLength = snprintf(acPath, sizeof(acPath), "%s/application_packet.log", pcDirectory);
     if ((iLength < 0) || ((size_t)iLength >= sizeof(acPath))) {
         pResult->eError = IPSEC_ERR_BUFFER_TOO_SMALL;
@@ -757,7 +851,10 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
         return eError;
     }
     (void)fprintf(Session.pLog, "transport=TCP packet_path=APPLICATION case=%s "
-        "packets_per_direction=%u\n", pcCaseId, NATIVE_APP_PROBE_COUNT);
+        "packets_per_direction=%u packet_timeout_ms=%u\n", pcCaseId,
+        NATIVE_APP_PROBE_COUNT,
+        (pConfig->uiTimeoutMs < NATIVE_APP_PACKET_TEST_TIMEOUT_MS) ?
+            pConfig->uiTimeoutMs : NATIVE_APP_PACKET_TEST_TIMEOUT_MS);
     (void)fprintf(Session.pLog, "outer_local=%s outer_remote=%s local_ts=%s remote_ts=%s\n"
         "expected_spi_in=0x%08" PRIx32 " expected_spi_out=0x%08" PRIx32 "\n",
         pConfig->acLocalAddress, pConfig->acRemoteAddress, pConfig->acLocalTrafficSelector,

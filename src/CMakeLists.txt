@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(linux_ipsec_library VERSION 0.1.0 LANGUAGES C)
+project(linux_ipsec_library VERSION 0.2.0 LANGUAGES C)
 
 option(IPSEC_BUILD_TESTS "Build host unit tests" ON)
 option(IPSEC_BUILD_APP "Build the interactive packet-path diagnostic application" ON)
@@ -54,6 +54,7 @@ set(IPSEC_SOURCES
     datapath/plain/system_plain_path.c
     datapath/plain/application_plain_path.c
     datapath/plain/plain_netfilter.c
+    datapath/plain/plain_nftables.c
     network/address.c
     network/interface.c
     network/route.c)
@@ -78,7 +79,7 @@ add_library(ipsec_static STATIC $<TARGET_OBJECTS:ipsec_objects>)
 add_library(ipsec_shared SHARED $<TARGET_OBJECTS:ipsec_objects>)
 set_target_properties(ipsec_static PROPERTIES OUTPUT_NAME ipsecctrl)
 set_target_properties(ipsec_shared PROPERTIES
-    OUTPUT_NAME ipsecctrl VERSION ${PROJECT_VERSION} SOVERSION 0
+    OUTPUT_NAME ipsecctrl VERSION ${PROJECT_VERSION} SOVERSION 1
     BUILD_WITH_INSTALL_RPATH TRUE)
 target_include_directories(ipsec_static PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../include)
@@ -145,6 +146,7 @@ if(IPSEC_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
             test_protected_filter
             test_protected_tun
             test_plain_netfilter
+            test_plain_nftables
             test_psk_generate)
         add_executable(${TestName}
             ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/${TestName}.c)

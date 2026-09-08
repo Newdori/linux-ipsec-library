@@ -56,6 +56,7 @@ SOURCES := \
 	datapath/plain/system_plain_path.c \
 	datapath/plain/application_plain_path.c \
 	datapath/plain/plain_netfilter.c \
+	datapath/plain/plain_nftables.c \
 	network/address.c \
 	network/interface.c \
 	network/route.c
@@ -64,8 +65,8 @@ PLATFORM ?= undefined
 ARCH_DIRECTORY ?= undefined
 BUILD_DIRECTORY := .build/$(PLATFORM)
 OBJECTS := $(SOURCES:%.c=$(BUILD_DIRECTORY)/%.o)
-LIBRARY_VERSION := 0.1.0
-LIBRARY_SONAME := libipsecctrl.so.0
+LIBRARY_VERSION := 0.2.0
+LIBRARY_SONAME := libipsecctrl.so.1
 BUILD_STATIC_LIBRARY := $(BUILD_DIRECTORY)/libipsecctrl.a
 BUILD_SHARED_LIBRARY := $(BUILD_DIRECTORY)/libipsecctrl.so.$(LIBRARY_VERSION)
 OUTPUT_DIRECTORY := ../lib/$(ARCH_DIRECTORY)

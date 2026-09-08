@@ -15,8 +15,9 @@ static bool VerifyDatapathSettings(void)
     CHECK(IPSEC_PACKET_PATH_SYSTEM == Config.Datapath.eProtectedPacketPath);
     CHECK(IPSEC_PACKET_PATH_SYSTEM == Config.Datapath.ePlainPacketPath);
     CHECK(IPSEC_DATAPATH_PREFER_AUTO == Config.Datapath.ePreference);
-    CHECK(NATIVE_APP_PLAIN_NETFILTER_INPUT ==
-          Config.ePlainNetfilterHook);
+    CHECK(IPSEC_PLAIN_NETFILTER_INPUT ==
+          Config.Datapath.ePlainNetfilterHook);
+    CHECK(Config.Datapath.bManagePlainNetfilterRule);
     CHECK(IPSEC_ERR_INVALID_ARGUMENT == SetNativeAppConfigSetting(
         NULL, "protected_packet_path", "application"));
     CHECK(IPSEC_ERR_INVALID_ARGUMENT == SetNativeAppConfigSetting(
@@ -44,8 +45,8 @@ static bool VerifyDatapathSettings(void)
         &Config, "plain_queue_number", "32002"));
     CHECK(IPSEC_OK == SetNativeAppConfigSetting(
         &Config, "plain_netfilter_hook", "forward"));
-    CHECK(NATIVE_APP_PLAIN_NETFILTER_FORWARD ==
-          Config.ePlainNetfilterHook);
+    CHECK(IPSEC_PLAIN_NETFILTER_FORWARD ==
+          Config.Datapath.ePlainNetfilterHook);
     CHECK(IPSEC_OK == ValidateNativeAppDatapathConfig(&Config));
     Copy = Config;
     CHECK(AreNativeAppContextSettingsEqual(&Copy, &Config));
@@ -57,7 +58,10 @@ static bool VerifyDatapathSettings(void)
     Copy.Datapath.ePlainPacketPath = IPSEC_PACKET_PATH_SYSTEM;
     CHECK(!AreNativeAppContextSettingsEqual(&Copy, &Config));
     Copy = Config;
-    Copy.ePlainNetfilterHook = NATIVE_APP_PLAIN_NETFILTER_INPUT;
+    Copy.Datapath.ePlainNetfilterHook = IPSEC_PLAIN_NETFILTER_INPUT;
+    CHECK(!AreNativeAppContextSettingsEqual(&Copy, &Config));
+    Copy = Config;
+    Copy.Datapath.bManagePlainNetfilterRule = false;
     CHECK(!AreNativeAppContextSettingsEqual(&Copy, &Config));
     CHECK(IPSEC_OK == SetNativeAppConfigSetting(
         &Config, "protected_filter_priority", "65534"));

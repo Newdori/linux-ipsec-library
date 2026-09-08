@@ -583,6 +583,7 @@ IpsecError_t AddIpsecConnection(
     ViciCommandResult_t Result = {0};
     IpsecError_t eError;
     bool bProtectedPeerAdded = false;
+    bool bPlainPeerAdded = false;
 
     if (NULL == pContext) {
         eError = IPSEC_ERR_INVALID_ARGUMENT;
@@ -616,6 +617,13 @@ IpsecError_t AddIpsecConnection(
         /* Preserve message error. */
     }
     if (IPSEC_OK == eError) {
+        eError = RegisterIpsecPlainPeerInternal(
+            pContext, pConfig, &bPlainPeerAdded);
+    }
+    else {
+        /* Preserve protected-path registration error. */
+    }
+    if (IPSEC_OK == eError) {
         eError = ExecuteViciCommand(pContext, "load-conn", &Message, NULL,
                                     NULL, NULL, NULL, &Result);
     }
@@ -623,6 +631,16 @@ IpsecError_t AddIpsecConnection(
         /* Preserve message error. */
     }
     DestroyViciBuffer(&Message);
+    if ((IPSEC_OK != eError) && bPlainPeerAdded) {
+        IpsecError_t eCleanupError = UnregisterIpsecPlainPeerInternal(
+            pContext, pConfig->pcName);
+
+        if (IPSEC_OK != eCleanupError) {
+            LogIpsec(pContext, IPSEC_LOG_WARNING,
+                "plain APPLICATION rollback failed for %s: %s",
+                pConfig->pcName, GetIpsecErrorString(eCleanupError));
+        }
+    }
     if ((IPSEC_OK != eError) && bProtectedPeerAdded) {
         IpsecError_t eCleanupError = UnregisterIpsecProtectedPeerInternal(
             pContext, pConfig->pcName);
@@ -701,7 +719,12 @@ IpsecError_t RemoveIpsecConnection(
     }
     DestroyViciBuffer(&Message);
     if (IPSEC_OK == eError) {
-        eError = UnregisterIpsecProtectedPeerInternal(pContext, pcName);
+        IpsecError_t ePlainError =
+            UnregisterIpsecPlainPeerInternal(pContext, pcName);
+        IpsecError_t eProtectedError =
+            UnregisterIpsecProtectedPeerInternal(pContext, pcName);
+
+        eError = (IPSEC_OK != ePlainError) ? ePlainError : eProtectedError;
     }
     else {
         /* Keep the filter while unload completion is uncertain. */

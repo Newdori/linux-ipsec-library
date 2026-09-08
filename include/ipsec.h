@@ -65,11 +65,12 @@ IpsecError_t SubmitIpsecProtectedPacket(
     IpsecContext_t *pContext, const IpsecProtectedPacket_t *pPacket);
 
 /* Returns one authenticated, decrypted and decapsulated inner IPv4 packet
- * selected by the OS-owned post-decrypt NFQUEUE rule. The library copies the
+ * selected by the configured post-decrypt NFQUEUE rule. The library copies the
  * full IPv4 packet and issues NF_DROP, so it is not also delivered to the
  * Linux stack. Exactly one plain reader may use a context. The caller must
  * continuously drain the configured queue and stop/join the reader before
- * deinitialization.
+ * deinitialization. A library-owned rule is installed per connection when
+ * IpsecDatapathConfig_t.bManagePlainNetfilterRule is true.
  */
 IpsecError_t ReceiveIpsecPlainPacket(
     IpsecContext_t *pContext, IpsecPlainPacket_t *pPacket,

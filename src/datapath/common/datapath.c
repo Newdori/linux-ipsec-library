@@ -49,6 +49,10 @@ IpsecError_t ConfigureIpsecDatapath(IpsecContext_t *pContext,
         (0U == Config.usPlainQueueNumber)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
+    if ((IPSEC_PLAIN_NETFILTER_INPUT != Config.ePlainNetfilterHook) &&
+        (IPSEC_PLAIN_NETFILTER_FORWARD != Config.ePlainNetfilterHook)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
     if (!ValidateDatapathName(Config.acKernelLibipsecTunName,
                              sizeof(Config.acKernelLibipsecTunName)) ||
         !ValidateDatapathName(Config.acProtectedInterfaceName,

@@ -211,11 +211,13 @@ static void PrintNativeAppHelp(void)
         "  test algorithm count MODE   show algorithm testcase count\n"
         "  test algorithm check MODE   validate the generated catalog\n"
         "  test algorithm serve [--port N]\n"
+        "                               independent from peer listen port (default 39001 vs 39002)\n"
         "    APPLICATION/APPLICATION: TCP relay with inner IPv4 /32 payload verification\n"
         "                               serve Native peer test requests\n"
         "  test algorithm run MODE [--start N] [--limit N|--all] [--port N]\n"
         "      [--results FILE] [--delay-ms N] [--stop-on-error|--continue-on-error]\n"
-        "      APPLICATION packet failures stop the run unless --continue-on-error is explicit.\n"
+        "      [--continue-on-data-path-error]\n"
+        "      APPLICATION packet failures stop unless the data-path override is explicit.\n"
         "      [--ike PROPOSAL --esp PROPOSAL]\n"
         "                               run baseline/exhaustive/custom tests\n"
         "  help                         show this command list\n"
@@ -1742,6 +1744,11 @@ static IpsecError_t ParseNativeAppAlgorithmRunOptions(
             uiIndex += 2U;
         }
         else if (0 == strcmp("--continue-on-error",
+                             ppcArguments[uiIndex])) {
+            pOptions->bContinueOnError = true;
+            uiIndex++;
+        }
+        else if (0 == strcmp("--continue-on-data-path-error",
                              ppcArguments[uiIndex])) {
             pOptions->bContinueOnError = true;
             pOptions->bContinueOnDataPathError = true;
