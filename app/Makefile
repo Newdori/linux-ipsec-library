@@ -20,7 +20,12 @@ BUILD_ID ?= $(shell git -C .. describe --always --dirty 2>/dev/null)
 ifeq ($(strip $(BUILD_ID)),)
 BUILD_ID := unknown
 endif
+GIT_COMMIT ?= $(shell git -C .. rev-parse HEAD 2>/dev/null)
+ifeq ($(strip $(GIT_COMMIT)),)
+GIT_COMMIT := unknown
+endif
 CPPFLAGS += -DNATIVE_APP_BUILD_ID=\"$(BUILD_ID)\"
+CPPFLAGS += -DNATIVE_APP_GIT_COMMIT=\"$(GIT_COMMIT)\"
 
 ifneq ($(strip $(SYSROOT)),)
 CPPFLAGS += --sysroot=$(SYSROOT)

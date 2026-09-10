@@ -65,6 +65,23 @@ static uint64_t GetNativeAppAlgorithmTimeMs(void)
     }
 }
 
+static bool FormatNativeAppAlgorithmUtcTimestamp(
+    char *pcTimestamp,
+    size_t zTimestampLength)
+{
+    struct tm TimeValue;
+    time_t TimeNow;
+
+    if ((NULL == pcTimestamp) || (0U == zTimestampLength)) {
+        return false;
+    }
+    TimeNow = time(NULL);
+    return ((time_t)-1 != TimeNow) &&
+        (NULL != gmtime_r(&TimeNow, &TimeValue)) &&
+        (0U != strftime(pcTimestamp, zTimestampLength,
+                        "%Y-%m-%dT%H:%M:%SZ", &TimeValue));
+}
+
 const char *GetNativeAppAlgorithmResultName(
     NativeAppAlgorithmResult_t eResult)
 {
@@ -1560,24 +1577,41 @@ static void WriteNativeAppJsonString(FILE *pFile, const char *pcText)
 
 static IpsecError_t OpenNativeAppAlgorithmJson(
     const NativeAppAlgorithmOptions_t *pOptions,
+    const char *pcRole,
     const char *pcRunId,
     uint32_t uiRequested,
     NativeAppAlgorithmJsonWriter_t *pWriter)
 {
-    const char *pcPath = (NULL != pOptions->pcResultsPath) ?
-        pOptions->pcResultsPath : "results.json";
+    const char *pcPath;
+    char acTimestamp[32] = "unknown";
 
+    if ((NULL == pOptions) || (NULL == pcRole) || (NULL == pcRunId) ||
+        (NULL == pWriter)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    pcPath = (NULL != pOptions->pcResultsPath) ?
+        pOptions->pcResultsPath : "results.json";
     (void)memset(pWriter, 0, sizeof(*pWriter));
     pWriter->pFile = fopen(pcPath, "w+b");
     if (NULL == pWriter->pFile) {
         return IPSEC_ERR_FILE_OPEN;
     }
-    (void)fputs("{\n  \"schema_version\": 9,\n  \"run_id\": ",
+    (void)FormatNativeAppAlgorithmUtcTimestamp(
+        acTimestamp, sizeof(acTimestamp));
+    (void)fputs("{\n  \"schema_version\": 10,\n  \"run_id\": ",
                 pWriter->pFile);
     WriteNativeAppJsonString(pWriter->pFile, pcRunId);
+    (void)fputs(",\n  \"role\": ", pWriter->pFile);
+    WriteNativeAppJsonString(pWriter->pFile, pcRole);
     (void)fputs(",\n  \"mode\": ", pWriter->pFile);
     WriteNativeAppJsonString(pWriter->pFile,
                              GetNativeAppAlgorithmModeName(pOptions->eMode));
+    (void)fputs(",\n  \"application_build_id\": ", pWriter->pFile);
+    WriteNativeAppJsonString(pWriter->pFile, NATIVE_APP_BUILD_ID);
+    (void)fputs(",\n  \"full_git_commit\": ", pWriter->pFile);
+    WriteNativeAppJsonString(pWriter->pFile, NATIVE_APP_GIT_COMMIT);
+    (void)fputs(",\n  \"test_start_utc\": ", pWriter->pFile);
+    WriteNativeAppJsonString(pWriter->pFile, acTimestamp);
     (void)fprintf(pWriter->pFile,
                   ",\n  \"start\": %" PRIu32
                   ",\n  \"requested\": %" PRIu32
@@ -1749,8 +1783,14 @@ static void CloseNativeAppAlgorithmJson(
 {
     if (NULL != pWriter->pFile) {
         if (0 == fseek(pWriter->pFile, pWriter->lTailOffset, SEEK_SET)) {
+            char acTimestamp[32] = "unknown";
+
+            (void)FormatNativeAppAlgorithmUtcTimestamp(
+                acTimestamp, sizeof(acTimestamp));
+            (void)fputs("\n  ],\n  \"test_end_utc\": ", pWriter->pFile);
+            WriteNativeAppJsonString(pWriter->pFile, acTimestamp);
             (void)fprintf(pWriter->pFile,
-                          "\n  ],\n  \"summary\": {\"completed\": %" PRIu32
+                          ",\n  \"summary\": {\"completed\": %" PRIu32
                           ", \"passed\": %" PRIu32
                           ", \"expected_not_supported\": %" PRIu32
                           ", \"failed\": %" PRIu32 "}\n}\n",
@@ -2381,8 +2421,8 @@ IpsecError_t RunNativeAppAlgorithmClient(
             acResultDirectory, uiRequested, false);
     }
     if (IPSEC_OK == eError) {
-        eError = OpenNativeAppAlgorithmJson(&EffectiveOptions, acRunId,
-                                            uiRequested, &Writer);
+        eError = OpenNativeAppAlgorithmJson(
+            &EffectiveOptions, "initiator", acRunId, uiRequested, &Writer);
     }
     if (IPSEC_OK != eError) {
         if (0 <= iSocket) {
@@ -2642,6 +2682,7 @@ static IpsecError_t RunNativeAppAlgorithmServerCase(
     FILE *pLog,
     uint32_t uiOrdinal,
     uint32_t uiRequested,
+    NativeAppAlgorithmJsonWriter_t *pWriter,
     bool *pbCleanupVerified)
 {
     NativeAppAlgorithmCaseResult_t Result = {0};
@@ -2658,7 +2699,7 @@ static IpsecError_t RunNativeAppAlgorithmServerCase(
     IpsecError_t eCaseError = IPSEC_OK;
     IpsecError_t eError;
 
-    if (NULL == pbCleanupVerified) {
+    if ((NULL == pWriter) || (NULL == pbCleanupVerified)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     *pbCleanupVerified = false;
@@ -2951,6 +2992,13 @@ static IpsecError_t RunNativeAppAlgorithmServerCase(
     (void)FinishNativeAppAlgorithmCaseReport(
         pContext, &Config, &Result, "responder", pcResultDirectory,
         pcCaseDirectory, uiOrdinal, uiRequested);
+    {
+        IpsecError_t eJson = AppendNativeAppAlgorithmJson(pWriter, &Result);
+
+        if ((IPSEC_OK != eJson) && (IPSEC_OK == eError)) {
+            eError = eJson;
+        }
+    }
     return eError;
 }
 
@@ -2962,9 +3010,12 @@ IpsecError_t RunNativeAppAlgorithmServer(
     NativeAppAlgorithmEndpoint_t Local;
     NativeAppAlgorithmEndpoint_t Peer;
     NativeAppAlgorithmCapabilities_t Capabilities;
+    NativeAppAlgorithmJsonWriter_t Writer = {0};
+    NativeAppAlgorithmOptions_t JsonOptions = {0};
     char acRunId[NATIVE_APP_ALGORITHM_RUN_ID_LENGTH] = {0};
     char acLastCleanupCaseId[NATIVE_APP_ALGORITHM_CASE_ID_LENGTH] = {0};
     char acResultDirectory[NATIVE_APP_PATH_LENGTH] = {0};
+    char acResultPath[NATIVE_APP_PATH_LENGTH] = {0};
     FILE *pLog = NULL;
     uint32_t uiRunRequested = 0U;
     uint32_t uiRunCaseOrdinal = 0U;
@@ -3143,6 +3194,19 @@ IpsecError_t RunNativeAppAlgorithmServer(
                     acResultDirectory, uiRunRequested, false);
             }
             if (IPSEC_OK == eError) {
+                eError = JoinNativeAppAlgorithmPath(
+                    acResultPath, sizeof(acResultPath), acResultDirectory,
+                    "results.json");
+            }
+            if (IPSEC_OK == eError) {
+                JsonOptions.eMode = eRunMode;
+                JsonOptions.uiStart = Case.uiNumber;
+                JsonOptions.pcResultsPath = acResultPath;
+                eError = OpenNativeAppAlgorithmJson(
+                    &JsonOptions, "responder", acRunId, uiRunRequested,
+                    &Writer);
+            }
+            if (IPSEC_OK == eError) {
                 ReportNativeAppAlgorithm(
                     pLog, stdout, "INFO",
                     "algorithm responder run started: run=%s results=%s",
@@ -3207,7 +3271,7 @@ IpsecError_t RunNativeAppAlgorithmServer(
                     pContext, iSocket, &Peer, &Sender, pConfig,
                     &Capabilities, &Case, acResultDirectory,
                     acCaseDirectory, pLog, uiRunCaseOrdinal, uiRunRequested,
-                    &bCleanupVerified);
+                    &Writer, &bCleanupVerified);
                 if (bCleanupVerified) {
                     (void)CopyNativeAppAlgorithmValue(
                         acLastCleanupCaseId, sizeof(acLastCleanupCaseId),
@@ -3241,6 +3305,7 @@ IpsecError_t RunNativeAppAlgorithmServer(
     if (0 <= iListener) {
         (void)close(iListener);
     }
+    CloseNativeAppAlgorithmJson(&Writer);
     if (NULL != pLog) {
         (void)fclose(pLog);
     }

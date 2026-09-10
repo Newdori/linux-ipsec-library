@@ -273,7 +273,16 @@ static void *RunTestServer(void *pvData)
             }
             uiLength = ntohl(uiNetworkLength);
             CHECK((uiLength > 0U) && (uiLength <= sizeof(aucPacket)));
-            CHECK(TransferTestBytes(pClient->iSocket, aucPacket, uiLength, false));
+            if (!TransferTestBytes(
+                    pClient->iSocket, aucPacket, uiLength, false)) {
+                /* A cancelled wait may close its transport after the length
+                 * header was sent but before the request body was completed.
+                 * A real VICI server drops only that truncated connection.
+                 */
+                (void)close(pClient->iSocket);
+                pClient->iSocket = -1;
+                continue;
+            }
             CHECK(IPSEC_OK == DecodeViciPacket(aucPacket, uiLength, &View));
             HandleTestPacket(pServer, pClient, &View);
         }

@@ -666,6 +666,35 @@ static IpsecError_t ReceiveNativeAppProbePacket(NativeAppProbeSession_t *pSessio
     return IPSEC_ERR_CANCELLED;
 }
 
+static void WriteNativeAppProbePacketMetadata(
+    const NativeAppProbeSession_t *pSession,
+    const char *pcStage,
+    const NativeAppPacketEvidence_t *pEvidence,
+    size_t zLength,
+    IpsecError_t eError)
+{
+    char acMessage[256];
+    int32_t iLength;
+
+    if ((NULL == pSession) || (NULL == pSession->pConfig) ||
+        (NULL == pcStage) || (NULL == pEvidence)) {
+        return;
+    }
+    iLength = snprintf(acMessage, sizeof(acMessage),
+        "protected TUN test packet: stage=%s direction=%s probe=%" PRIu32
+        " bytes=%zu spi=0x%08" PRIx32 " sequence=%" PRIu32 " error=%s",
+        pcStage, pEvidence->bOutbound ? "outbound" : "inbound",
+        pEvidence->uiProbeSequence, zLength, pEvidence->uiEspSpi,
+        pEvidence->uiEspSequence,
+        (IPSEC_OK == eError) ? "none" : GetIpsecErrorString(eError));
+    if ((0 <= iLength) && ((size_t)iLength < sizeof(acMessage))) {
+        WriteNativeAppDiagnosticLog(
+            pSession->pConfig->pDiagnosticLog,
+            (IPSEC_OK == eError) ? IPSEC_LOG_INFO : IPSEC_LOG_WARNING,
+            acMessage);
+    }
+}
+
 static IpsecError_t SendNativeAppProbe(NativeAppProbeSession_t *pSession,
     const char *pcCaseId, uint8_t ucSequence)
 {
@@ -703,6 +732,8 @@ static IpsecError_t SendNativeAppProbe(NativeAppProbeSession_t *pSession,
             eStatus = IPSEC_ERR_BUFFER_TOO_SMALL;
         }
         RecordNativeAppProbeStage(pSession, "protected_receive", eStatus, zLength, false);
+        WriteNativeAppProbePacketMetadata(
+            pSession, "capture", pEvidence, zLength, eStatus);
     }
     eError = SendNativeAppProbeRecord(pSession, 'E', ucSequence, eStatus,
         aucData, (IPSEC_OK == eStatus) ? zLength : 0U);
@@ -767,6 +798,8 @@ static IpsecError_t ReceiveNativeAppProbe(NativeAppProbeSession_t *pSession,
         eStatus = SubmitIpsecProtectedPacket(pSession->pContext, &Packet);
         pEvidence->bEspSubmitted = (IPSEC_OK == eStatus);
         RecordNativeAppProbeStage(pSession, "protected_submit", eStatus, zLength, false);
+        WriteNativeAppProbePacketMetadata(
+            pSession, "submit", pEvidence, zLength, eStatus);
     }
     if (IPSEC_OK == eStatus) {
         pEvidence->bPlainAttempted = true;
@@ -849,6 +882,19 @@ IpsecError_t RunNativeAppAlgorithmPacketTest(IpsecContext_t *pContext,
         (void)fclose(Session.pLog);
         (void)shutdown(iSocket, SHUT_RDWR);
         return eError;
+    }
+    {
+        char acMessage[256];
+
+        iLength = snprintf(acMessage, sizeof(acMessage),
+            "protected TUN test session: case=%s role=%s "
+            "expected_spi_in=0x%08" PRIx32 " expected_spi_out=0x%08" PRIx32,
+            pcCaseId, bServer ? "responder" : "initiator",
+            uiInboundSpi, uiOutboundSpi);
+        if ((0 <= iLength) && ((size_t)iLength < sizeof(acMessage))) {
+            WriteNativeAppDiagnosticLog(
+                pConfig->pDiagnosticLog, IPSEC_LOG_INFO, acMessage);
+        }
     }
     (void)fprintf(Session.pLog, "transport=TCP packet_path=APPLICATION case=%s "
         "packets_per_direction=%u packet_timeout_ms=%u\n", pcCaseId,

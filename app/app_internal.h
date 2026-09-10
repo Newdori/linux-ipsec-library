@@ -29,6 +29,9 @@
 #ifndef NATIVE_APP_BUILD_ID
 #define NATIVE_APP_BUILD_ID "unknown"
 #endif
+#ifndef NATIVE_APP_GIT_COMMIT
+#define NATIVE_APP_GIT_COMMIT "unknown"
+#endif
 #define NATIVE_APP_PEER_CAPACITY              256U
 #define NATIVE_APP_PEER_LOGON_LIMIT            100U
 #define NATIVE_APP_PEER_LISTENER_POLL_MS       250U
