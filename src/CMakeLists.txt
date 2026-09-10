@@ -2,6 +2,30 @@ cmake_minimum_required(VERSION 3.16)
 
 project(linux_ipsec_library VERSION 0.2.0 LANGUAGES C)
 
+set(NATIVE_APP_BUILD_ID "unknown")
+set(NATIVE_APP_GIT_COMMIT "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} -C ${CMAKE_CURRENT_SOURCE_DIR}/..
+                describe --always --dirty
+        OUTPUT_VARIABLE NATIVE_APP_BUILD_ID
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} -C ${CMAKE_CURRENT_SOURCE_DIR}/..
+                rev-parse HEAD
+        OUTPUT_VARIABLE NATIVE_APP_GIT_COMMIT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+endif()
+if(NATIVE_APP_BUILD_ID STREQUAL "")
+    set(NATIVE_APP_BUILD_ID "unknown")
+endif()
+if(NATIVE_APP_GIT_COMMIT STREQUAL "")
+    set(NATIVE_APP_GIT_COMMIT "unknown")
+endif()
+
 option(IPSEC_BUILD_TESTS "Build host unit tests" ON)
 option(IPSEC_BUILD_APP "Build the interactive packet-path diagnostic application" ON)
 option(IPSEC_BUILD_LIVE_TESTS "Build opt-in privileged datapath diagnostic (not a CTest)" OFF)
@@ -125,7 +149,10 @@ if(IPSEC_BUILD_APP)
         ../app/algorithm_catalog.c ../app/algorithm_report.c ../app/algorithm_runner.c
         ../app/algorithm_packet.c ../app/algorithm_packet_codec.c
         ../app/algorithm_packet_evidence.c)
-    target_compile_definitions(ipsec_app PRIVATE _POSIX_C_SOURCE=200809L)
+    target_compile_definitions(ipsec_app PRIVATE
+        _POSIX_C_SOURCE=200809L
+        NATIVE_APP_BUILD_ID=\"${NATIVE_APP_BUILD_ID}\"
+        NATIVE_APP_GIT_COMMIT=\"${NATIVE_APP_GIT_COMMIT}\")
     target_compile_options(ipsec_app PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_link_libraries(ipsec_app PRIVATE ipsec_static Threads::Threads ${CMAKE_DL_LIBS})
     set_target_properties(ipsec_app PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

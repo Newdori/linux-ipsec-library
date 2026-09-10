@@ -26,6 +26,9 @@ int main(void)
     CHECK(NULL != Log.pFile);
     WriteNativeAppDiagnosticLog(&Log, IPSEC_LOG_WARNING,
         "protected TUN packet rejected: bytes=48 class=unsupported_or_malformed");
+    WriteNativeAppDiagnosticLog(&Log, IPSEC_LOG_INFO,
+        "protected TUN test packet: stage=capture direction=outbound "
+        "probe=1 bytes=148 spi=0x01020304 sequence=7 error=none");
     WriteNativeAppDiagnosticLog(&Log, IPSEC_LOG_WARNING,
         "credential value must not be copied into the packet diagnostic");
     CHECK(0 == fflush(Log.pFile));
@@ -33,6 +36,9 @@ int main(void)
     zLength = fread(acText, 1U, sizeof(acText) - 1U, Log.pFile);
     CHECK(zLength > 0U);
     CHECK(NULL != strstr(acText, "protected TUN packet rejected"));
+    CHECK(NULL != strstr(acText,
+        "stage=capture direction=outbound probe=1 bytes=148"));
+    CHECK(NULL != strstr(acText, "spi=0x01020304 sequence=7 error=none"));
     CHECK(NULL == strstr(acText, "credential value"));
     CHECK(IPSEC_OK == CloseNativeAppDiagnosticLog(&Log));
     DeinitializeNativeAppDiagnosticLog(&Log);

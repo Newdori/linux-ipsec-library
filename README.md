@@ -501,7 +501,14 @@ the drop. APPLICATION failure reports preserve the first local packet error;
 a peer's echoed ABORT no longer erases it. `application_packet_test.local_error`
 distinguishes local failure from an error received from the peer.
 
-Existing dated result directories and `results.json` are retained (schema 9).
+Existing dated result directories and `results.json` are retained (schema 10).
+Both initiator and responder create `results.json`. The top-level identity records
+the role, short build ID, full Git commit and UTC start/end timestamps.
+`run_context.txt` additionally records canonical FNV-1a configuration/catalog
+fingerprints, requested/active datapaths and packet paths. The fingerprints are
+reproducibility identifiers, not cryptographic integrity proofs. strongSwan does
+not expose plugin load priorities over VICI, so this limitation is recorded
+explicitly instead of reporting a guessed priority.
 Each executed packet stage adds `application_packet.log` (elapsed time, stage,
 error and packet metadata), `library_packet.log` (bounded protected-TUN packet
 classification metadata), and `packet_evidence.csv` (one row per attempted
@@ -514,8 +521,11 @@ addresses, ports, nonce, sequence and all 128 payload bytes.
 
 The library-owned protected TUN disables IPv6 before it is brought up so that
 locally generated IPv6 control traffic is not confused with captured IPv4 RAW
-ESP traffic. `library_packet.log` never stores packet payloads, PSKs, or private
-key material.
+ESP traffic. `library_packet.log` records the test role plus capture/submit
+length, SPI, ESP sequence and result; it never stores packet payloads, PSKs, or
+private key material. XFRM statistics reports use `status=not_applicable` for a
+kernel-libipsec run instead of presenting the expected backend mismatch as an
+error.
 
 The console, run log, per-case `application.log`, `result_summary.txt` and packet log show
 `ESP_CAPTURE`, `ESP_SUBMIT`, `PLAIN_DELIVERY`, `PAYLOAD_MATCH` and an overall

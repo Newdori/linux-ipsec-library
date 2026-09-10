@@ -7,6 +7,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
+
+#define NATIVE_APP_REPORT_HASH_OFFSET UINT64_C(14695981039346656037)
+#define NATIVE_APP_REPORT_HASH_PRIME  UINT64_C(1099511628211)
 
 static IpsecError_t JoinReportPath(
     char *pcPath,
@@ -108,6 +112,186 @@ static const char *GetReportDatapath(IpsecDatapathType_t eType)
     return pcDatapath;
 }
 
+static const char *GetReportDatapathPreference(
+    IpsecDatapathPreference_t ePreference)
+{
+    const char *pcPreference;
+
+    switch (ePreference) {
+    case IPSEC_DATAPATH_PREFER_AUTO:
+        pcPreference = "auto";
+        break;
+    case IPSEC_DATAPATH_PREFER_XFRM:
+        pcPreference = "kernel-xfrm";
+        break;
+    case IPSEC_DATAPATH_PREFER_KERNEL_LIBIPSEC:
+        pcPreference = "kernel-libipsec";
+        break;
+    default:
+        pcPreference = "unknown";
+        break;
+    }
+    return pcPreference;
+}
+
+static const char *GetReportPacketPath(IpsecPacketPathMode_t eMode)
+{
+    const char *pcPath;
+
+    switch (eMode) {
+    case IPSEC_PACKET_PATH_SYSTEM:
+        pcPath = "system";
+        break;
+    case IPSEC_PACKET_PATH_APPLICATION:
+        pcPath = "application";
+        break;
+    default:
+        pcPath = "unknown";
+        break;
+    }
+    return pcPath;
+}
+
+static void UpdateReportHashText(uint64_t *pullHash, const char *pcText)
+{
+    const unsigned char *pucText = (const unsigned char *)pcText;
+
+    while ('\0' != *pucText) {
+        *pullHash ^= (uint64_t)*pucText;
+        *pullHash *= NATIVE_APP_REPORT_HASH_PRIME;
+        pucText++;
+    }
+    *pullHash ^= UINT64_C(255);
+    *pullHash *= NATIVE_APP_REPORT_HASH_PRIME;
+}
+
+static void UpdateReportHashNumber(uint64_t *pullHash, uint64_t ullValue)
+{
+    char acValue[32];
+    int32_t iLength = snprintf(acValue, sizeof(acValue), "%" PRIu64,
+                               ullValue);
+
+    if ((0 <= iLength) && ((size_t)iLength < sizeof(acValue))) {
+        UpdateReportHashText(pullHash, acValue);
+    }
+    else {
+        UpdateReportHashText(pullHash, "format-error");
+    }
+}
+
+static IpsecError_t BuildReportConfigurationHash(
+    const NativeAppConfig_t *pConfig,
+    char *pcHash,
+    size_t zHashLength)
+{
+    const IpsecDatapathConfig_t *pDatapath = &pConfig->Datapath;
+    uint64_t ullHash = NATIVE_APP_REPORT_HASH_OFFSET;
+    int32_t iLength;
+
+    UpdateReportHashNumber(&ullHash, (uint64_t)pConfig->eRole);
+    UpdateReportHashText(&ullHash, pConfig->acLocalAddress);
+    UpdateReportHashText(&ullHash, pConfig->acRemoteAddress);
+    UpdateReportHashText(&ullHash, pConfig->acLocalTrafficSelector);
+    UpdateReportHashText(&ullHash, pConfig->acRemoteTrafficSelector);
+    UpdateReportHashText(&ullHash, pConfig->acLocalId);
+    UpdateReportHashText(&ullHash, pConfig->acRemoteId);
+    UpdateReportHashText(&ullHash, pConfig->acPskFile);
+    UpdateReportHashText(&ullHash, pConfig->acOutputRoot);
+    UpdateReportHashText(&ullHash, pConfig->acViciSocket);
+    UpdateReportHashText(&ullHash, pConfig->acConnectionName);
+    UpdateReportHashText(&ullHash, pConfig->acChildName);
+    UpdateReportHashText(&ullHash, pConfig->acCredentialId);
+    UpdateReportHashText(&ullHash, pConfig->acPeerServerAddress);
+    UpdateReportHashText(&ullHash, pConfig->acIkeProposals);
+    UpdateReportHashText(&ullHash, pConfig->acEspProposals);
+    UpdateReportHashNumber(&ullHash, (uint64_t)pConfig->eMode);
+    UpdateReportHashNumber(&ullHash, pConfig->bChildlessIke ? 1U : 0U);
+    UpdateReportHashNumber(&ullHash, pConfig->bTerminateOnExit ? 1U : 0U);
+    UpdateReportHashNumber(&ullHash, pConfig->uiTimeoutMs);
+    UpdateReportHashNumber(&ullHash, pConfig->uiPeerPort);
+    UpdateReportHashNumber(&ullHash, (uint64_t)pDatapath->ePreference);
+    UpdateReportHashNumber(&ullHash,
+                           (uint64_t)pDatapath->eProtectedPacketPath);
+    UpdateReportHashNumber(&ullHash, (uint64_t)pDatapath->ePlainPacketPath);
+    UpdateReportHashText(&ullHash, pDatapath->acKernelLibipsecTunName);
+    UpdateReportHashText(&ullHash, pDatapath->acProtectedInterfaceName);
+    UpdateReportHashText(&ullHash,
+                         pDatapath->acProtectedEgressInterfaceName);
+    UpdateReportHashText(&ullHash, pDatapath->acProtectedLocalAddress);
+    UpdateReportHashText(&ullHash, pDatapath->acProtectedRemoteAddress);
+    UpdateReportHashNumber(&ullHash, pDatapath->usProtectedFilterPriority);
+    UpdateReportHashNumber(&ullHash, pDatapath->usPlainQueueNumber);
+    UpdateReportHashNumber(&ullHash,
+                           (uint64_t)pDatapath->ePlainNetfilterHook);
+    UpdateReportHashNumber(&ullHash,
+                           pDatapath->bManagePlainNetfilterRule ? 1U : 0U);
+    iLength = snprintf(pcHash, zHashLength, "fnv1a64:%016" PRIx64,
+                       ullHash);
+    return ((0 <= iLength) && ((size_t)iLength < zHashLength)) ?
+        IPSEC_OK : IPSEC_ERR_BUFFER_TOO_SMALL;
+}
+
+static IpsecError_t BuildReportMatrixHash(
+    const NativeAppConfig_t *pConfig,
+    NativeAppAlgorithmMode_t eMode,
+    char *pcHash,
+    size_t zHashLength)
+{
+    uint64_t ullHash = NATIVE_APP_REPORT_HASH_OFFSET;
+    uint32_t uiCount = GetNativeAppAlgorithmCaseCount(eMode);
+    uint32_t uiIndex;
+    IpsecError_t eError = IPSEC_OK;
+    int32_t iLength;
+
+    UpdateReportHashText(&ullHash, GetNativeAppAlgorithmModeName(eMode));
+    UpdateReportHashNumber(&ullHash, uiCount);
+    if (NATIVE_APP_ALGORITHM_CUSTOM == eMode) {
+        UpdateReportHashText(&ullHash, "CUSTOM-0001");
+        UpdateReportHashText(&ullHash, pConfig->acIkeProposals);
+        UpdateReportHashText(&ullHash, pConfig->acEspProposals);
+    }
+    else {
+        for (uiIndex = 0U; (IPSEC_OK == eError) && (uiIndex < uiCount);
+             uiIndex++) {
+            NativeAppAlgorithmCase_t Case = {0};
+
+            eError = GetNativeAppAlgorithmCase(
+                eMode, uiIndex, pConfig, NULL, NULL, &Case);
+            if (IPSEC_OK == eError) {
+                UpdateReportHashNumber(&ullHash, Case.uiNumber);
+                UpdateReportHashText(&ullHash, Case.acId);
+                UpdateReportHashText(&ullHash, Case.acIkeProposal);
+                UpdateReportHashText(&ullHash, Case.acEspProposal);
+                UpdateReportHashNumber(
+                    &ullHash, Case.bSeparateChildExchange ? 1U : 0U);
+            }
+        }
+    }
+    if (IPSEC_OK != eError) {
+        return eError;
+    }
+    iLength = snprintf(pcHash, zHashLength, "fnv1a64:%016" PRIx64,
+                       ullHash);
+    return ((0 <= iLength) && ((size_t)iLength < zHashLength)) ?
+        IPSEC_OK : IPSEC_ERR_BUFFER_TOO_SMALL;
+}
+
+static bool FormatReportUtcTimestamp(char *pcTimestamp,
+    size_t zTimestampLength)
+{
+    struct tm TimeValue;
+    time_t TimeNow;
+
+    if ((NULL == pcTimestamp) || (0U == zTimestampLength)) {
+        return false;
+    }
+    TimeNow = time(NULL);
+    return ((time_t)-1 != TimeNow) &&
+        (NULL != gmtime_r(&TimeNow, &TimeValue)) &&
+        (0U != strftime(pcTimestamp, zTimestampLength,
+                        "%Y-%m-%dT%H:%M:%SZ", &TimeValue));
+}
+
 static const char *GetReportPhaseResult(
     const NativeAppAlgorithmCaseResult_t *pResult,
     NativeAppAlgorithmPhase_t ePhase)
@@ -171,12 +355,14 @@ static void SaveXfrmStatistics(
     const char *pcName)
 {
     IpsecXfrmStatistics_t Stats = {0};
+    IpsecDatapathStatus_t DatapathStatus = {0};
     IpsecError_t eError = GetIpsecBackendXfrmStatistics(pContext, &Stats);
     FILE *pFile = OpenReportFile(pcDirectory, pcName, "w");
 
     if (NULL != pFile) {
         if (IPSEC_OK == eError) {
             (void)fprintf(pFile,
+                "status=success\nbackend=kernel-xfrm\n"
                 "present_mask=0x%016" PRIx64 "\n"
                 "in_error=%" PRIu64 "\nin_buffer_error=%" PRIu64 "\n"
                 "in_header_error=%" PRIu64 "\nin_no_states=%" PRIu64 "\n"
@@ -208,8 +394,19 @@ static void SaveXfrmStatistics(
                 Stats.ullOutStateSequenceError, Stats.ullOutStateExpired,
                 Stats.ullOutPolicyBlock, GetXfrmErrorTotal(&Stats));
         }
+        else if (IPSEC_ERR_BACKEND_MISMATCH == eError) {
+            IpsecError_t eDatapath = GetIpsecDatapathStatus(
+                pContext, &DatapathStatus);
+
+            (void)fprintf(pFile,
+                "status=not_applicable\nbackend=%s\n"
+                "reason=XFRM statistics do not apply to the active backend\n",
+                (IPSEC_OK == eDatapath) ?
+                    GetReportDatapath(DatapathStatus.eType) : "unknown");
+        }
         else {
-            (void)fprintf(pFile, "error=%s\n", GetIpsecErrorString(eError));
+            (void)fprintf(pFile, "status=error\nerror=%s\n",
+                          GetIpsecErrorString(eError));
         }
         (void)fclose(pFile);
     }
@@ -409,6 +606,9 @@ IpsecError_t WriteNativeAppAlgorithmRunReport(
     bool bFinal)
 {
     NativeAppAlgorithmCapabilities_t Capabilities = {0};
+    char acConfigurationHash[32] = "unknown";
+    char acMatrixHash[32] = "unknown";
+    char acTimestamp[32] = "unknown";
     IpsecError_t eCapabilities;
     FILE *pFile;
 
@@ -419,6 +619,11 @@ IpsecError_t WriteNativeAppAlgorithmRunReport(
     if (!bFinal) {
         eCapabilities = CollectNativeAppAlgorithmCapabilities(
             pContext, &Capabilities);
+        (void)BuildReportConfigurationHash(
+            pConfig, acConfigurationHash, sizeof(acConfigurationHash));
+        (void)BuildReportMatrixHash(
+            pConfig, eMode, acMatrixHash, sizeof(acMatrixHash));
+        (void)FormatReportUtcTimestamp(acTimestamp, sizeof(acTimestamp));
         pFile = OpenReportFile(pcResultDirectory, "run_context.txt", "w");
         if (NULL == pFile) {
             return IPSEC_ERR_FILE_OPEN;
@@ -428,7 +633,13 @@ IpsecError_t WriteNativeAppAlgorithmRunReport(
             "local_address=%s\nremote_address=%s\nlocal_id=%s\nremote_id=%s\n"
             "connection=%s\nchild=%s\nipsec_mode=%s\nvici_socket=%s\n"
             "timeout_ms=%" PRIu32 "\ncapability_query=%s\n"
-            "application_build_id=%s\nos_name=%s\nos_version=%s\n"
+            "application_build_id=%s\nfull_git_commit=%s\n"
+            "configuration_hash=%s\nmatrix_hash=%s\n"
+            "test_start_utc=%s\n"
+            "requested_datapath=%s\nprotected_packet_path=%s\n"
+            "plain_packet_path=%s\nactive_ipsec_backend=%s\n"
+            "charon_plugin_priority=not_exposed_by_vici\n"
+            "os_name=%s\nos_version=%s\n"
             "strongswan_version=%s\nkernel_release=%s\nmachine=%s\n"
             "capability_datapath=%s\nesn_support=%s\n"
             "modp8192_plugin=%s\nkdf_prf_plus_plugin=%s\n"
@@ -441,7 +652,12 @@ IpsecError_t WriteNativeAppAlgorithmRunReport(
             pConfig->acConnectionName, pConfig->acChildName,
             GetReportMode(pConfig->eMode), pConfig->acViciSocket,
             pConfig->uiTimeoutMs, GetIpsecErrorString(eCapabilities),
-            NATIVE_APP_BUILD_ID,
+            NATIVE_APP_BUILD_ID, NATIVE_APP_GIT_COMMIT,
+            acConfigurationHash, acMatrixHash, acTimestamp,
+            GetReportDatapathPreference(pConfig->Datapath.ePreference),
+            GetReportPacketPath(pConfig->Datapath.eProtectedPacketPath),
+            GetReportPacketPath(pConfig->Datapath.ePlainPacketPath),
+            GetReportDatapath(Capabilities.eDatapathType),
             ('\0' == Capabilities.acOsName[0]) ? "unknown" :
                 Capabilities.acOsName,
             ('\0' == Capabilities.acOsVersion[0]) ? "unknown" :
@@ -494,6 +710,12 @@ IpsecError_t WriteNativeAppAlgorithmRunReport(
         }
     }
     else {
+        (void)FormatReportUtcTimestamp(acTimestamp, sizeof(acTimestamp));
+        pFile = OpenReportFile(pcResultDirectory, "run_context.txt", "a");
+        if (NULL != pFile) {
+            (void)fprintf(pFile, "test_end_utc=%s\n", acTimestamp);
+            (void)fclose(pFile);
+        }
         SaveDaemonStatus(pContext, pcResultDirectory,
                          "daemon_status_final.txt");
         SaveXfrmStatistics(pContext, pcResultDirectory, "xfrm_statistics_final.txt");
