@@ -62,15 +62,15 @@ static IpsecError_t InitializeTestBackend(IpsecContext_t *pContext)
 
 static void DeinitializeTestBackend(IpsecContext_t *pContext)
 {
-    CHECK(NULL == pContext->pProtectedApplicationState);
-    CHECK(NULL == pContext->pPlainApplicationState);
+    CHECK(NULL == pContext->ProtectedPath.pApplicationState);
+    CHECK(NULL == pContext->PlainPath.pApplicationState);
     guiBackendCleanup++;
 }
 
 static IpsecError_t GetTestStatistics(IpsecContext_t *pContext,
     IpsecTrafficStatistics_t *pStatistics)
 {
-    if (IPSEC_DATAPATH_KERNEL_LIBIPSEC == pContext->eActiveDatapath) {
+    if (IPSEC_DATAPATH_KERNEL_LIBIPSEC == pContext->Datapath.eActiveType) {
         return IPSEC_ERR_NOT_SUPPORTED;
     }
     pStatistics->bCountersValid = true;
@@ -400,6 +400,7 @@ static void VerifyCombination(IpsecDatapathPreference_t ePreference,
     IpsecContext_t Context = {0};
     IpsecDatapathConfig_t Config = CreateTestConfig(ePreference, eProtected, ePlain);
     IpsecDatapathStatusEx_t Status = {.uiStructSize = sizeof(Status)};
+    IpsecRuntimeStatus_t Runtime = {.uiStructSize = sizeof(Runtime)};
     IpsecTrafficStatistics_t Statistics = {.uiStructSize = sizeof(Statistics)};
     IpsecXfrmStatistics_t XfrmStatistics = {0};
     uint8_t aucPacket[IPSEC_PROTECTED_PACKET_CAPACITY];
@@ -417,6 +418,11 @@ static void VerifyCombination(IpsecDatapathPreference_t ePreference,
     CHECK(IPSEC_OK == GetIpsecDatapathStatusEx(&Context, &Status));
     CHECK(Status.bBackendReady && Status.bProtectedPathReady &&
           Status.bPlainPathReady && !Status.bTrafficReady);
+    gbLibLoaded = bLib;
+    CHECK(IPSEC_OK == GetIpsecRuntimeStatus(&Context, &Runtime));
+    CHECK(Runtime.bDaemonReady && Runtime.bDatapathReady);
+    CHECK(Runtime.Datapath.bBackendReady);
+    CHECK(Runtime.Daemon.bKernelLibipsecLoaded == bLib);
     guiChildren = 1U;
     CHECK(IPSEC_OK == GetIpsecDatapathStatusEx(&Context, &Status));
     CHECK(Status.bTrafficReady);
@@ -474,7 +480,7 @@ static void VerifyFailures(void)
     CHECK(IPSEC_OK == ConfigureIpsecDatapath(&Context, &Config));
     geLibProbe = IPSEC_ERR_INTERFACE_NOT_FOUND;
     CHECK(IPSEC_OK == InitializeIpsecDatapath(&Context));
-    CHECK(IPSEC_DATAPATH_KERNEL_XFRM == Context.eActiveDatapath);
+    CHECK(IPSEC_DATAPATH_KERNEL_XFRM == Context.Datapath.eActiveType);
     DeinitializeIpsecDatapath(&Context);
     geLibProbe = IPSEC_ERR_INTERFACE_AMBIGUOUS;
     geXfrmProbe = IPSEC_ERR_BACKEND_MISMATCH;
@@ -490,18 +496,18 @@ static void VerifyFailures(void)
     geEndpointCreate = IPSEC_ERR_PERMISSION;
     uiBefore = guiEndpointCleanup;
     CHECK(IPSEC_ERR_PERMISSION == InitializeIpsecProtectedPath(&Context));
-    CHECK(NULL == Context.pProtectedApplicationState);
+    CHECK(NULL == Context.ProtectedPath.pApplicationState);
     CHECK(guiEndpointCleanup == uiBefore + 1U);
     geEndpointCreate = IPSEC_OK;
     geFilterInstall = IPSEC_ERR_RESOURCE_CONFLICT;
     CHECK(IPSEC_ERR_RESOURCE_CONFLICT == InitializeIpsecProtectedPath(&Context));
-    CHECK(NULL == Context.pProtectedApplicationState);
+    CHECK(NULL == Context.ProtectedPath.pApplicationState);
     geFilterInstall = IPSEC_OK;
     CHECK(IPSEC_OK == InitializeIpsecProtectedPath(&Context));
     gePlainOpen = IPSEC_ERR_RESOURCE_CONFLICT;
     uiBefore = guiPlainCleanup;
     CHECK(IPSEC_ERR_RESOURCE_CONFLICT == InitializeIpsecPlainPath(&Context));
-    CHECK(NULL == Context.pPlainApplicationState);
+    CHECK(NULL == Context.PlainPath.pApplicationState);
     CHECK(guiPlainCleanup == uiBefore + 1U);
     gePlainOpen = IPSEC_OK;
     DeinitializeIpsecProtectedPath(&Context);
@@ -524,10 +530,10 @@ static void VerifyDefaultsAndPacketTypes(void)
         .zLength = sizeof(aucPacket),
         .eType = IPSEC_PROTECTED_PACKET_UDP_ESP};
     CHECK(IPSEC_OK == ConfigureIpsecDatapath(&Context, NULL));
-    CHECK((IPSEC_DATAPATH_PREFER_AUTO == Context.DatapathConfig.ePreference) &&
+    CHECK((IPSEC_DATAPATH_PREFER_AUTO == Context.Datapath.Config.ePreference) &&
         (IPSEC_PACKET_PATH_SYSTEM ==
-            Context.DatapathConfig.eProtectedPacketPath) &&
-        (IPSEC_PACKET_PATH_SYSTEM == Context.DatapathConfig.ePlainPacketPath));
+            Context.Datapath.Config.eProtectedPacketPath) &&
+        (IPSEC_PACKET_PATH_SYSTEM == Context.Datapath.Config.ePlainPacketPath));
     CHECK(IPSEC_ERR_INVALID_ARGUMENT ==
         ConfigureIpsecDatapath(&Context, &Config));
     CHECK(IPSEC_ERR_PACKET_TYPE == ValidateIpsecProtectedPacket(&Packet));

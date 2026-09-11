@@ -30,14 +30,14 @@ static void SignalViciWaits(IpsecContext_t *pContext)
     const uint8_t ucSignal = 1U;
     ssize_t lResult;
 
-    for (pWaiter = pContext->pWaiters; NULL != pWaiter; pWaiter = pWaiter->pNext) {
+    for (pWaiter = pContext->Command.pWaiters; NULL != pWaiter; pWaiter = pWaiter->pNext) {
         do {
             lResult = send(pWaiter->aiCancelSockets[1], &ucSignal, sizeof(ucSignal),
                            MSG_NOSIGNAL);
         } while ((lResult < 0) && (EINTR == errno));
         /* EAGAIN means a previous cancellation is still queued/readable. */
     }
-    (void)pthread_cond_broadcast(&pContext->CommandCondition);
+    (void)pthread_cond_broadcast(&pContext->Command.Condition);
 }
 
 IpsecError_t CancelIpsecWaits(IpsecContext_t *pContext)
@@ -45,23 +45,23 @@ IpsecError_t CancelIpsecWaits(IpsecContext_t *pContext)
     if (NULL == pContext) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
-    if (0 != pthread_mutex_lock(&pContext->CommandMutex)) {
+    if (0 != pthread_mutex_lock(&pContext->Command.Mutex)) {
         return IPSEC_ERR_INTERNAL;
     }
     SignalViciWaits(pContext);
-    (void)pthread_mutex_unlock(&pContext->CommandMutex);
+    (void)pthread_mutex_unlock(&pContext->Command.Mutex);
     return IPSEC_OK;
 }
 
 void CloseViciWaits(IpsecContext_t *pContext)
 {
-    (void)pthread_mutex_lock(&pContext->CommandMutex);
-    pContext->bClosing = true;
+    (void)pthread_mutex_lock(&pContext->Command.Mutex);
+    pContext->Command.bClosing = true;
     SignalViciWaits(pContext);
-    while ((NULL != pContext->pWaiters) || pContext->bCommandActive) {
-        (void)pthread_cond_wait(&pContext->CommandCondition, &pContext->CommandMutex);
+    while ((NULL != pContext->Command.pWaiters) || pContext->Command.bActive) {
+        (void)pthread_cond_wait(&pContext->Command.Condition, &pContext->Command.Mutex);
     }
-    (void)pthread_mutex_unlock(&pContext->CommandMutex);
+    (void)pthread_mutex_unlock(&pContext->Command.Mutex);
 }
 
 IpsecError_t BeginViciWait(
@@ -72,31 +72,34 @@ IpsecError_t BeginViciWait(
     IpsecError_t eError = IPSEC_OK;
 
     memset(pWaiter, 0, sizeof(*pWaiter));
-    pWaiter->EventContext.iViciSocket = -1;
+    pWaiter->EventContext.Vici.iSocket = -1;
     pWaiter->aiCancelSockets[0] = -1;
     pWaiter->aiCancelSockets[1] = -1;
     if (0 != socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
                         0, pWaiter->aiCancelSockets)) {
         return IPSEC_ERR_VICI_TRANSPORT;
     }
-    if (0 != pthread_mutex_lock(&pContext->CommandMutex)) {
+    if (0 != pthread_mutex_lock(&pContext->Command.Mutex)) {
         eError = IPSEC_ERR_INTERNAL;
     }
     else {
-        if (pContext->bClosing) {
+        if (pContext->Command.bClosing) {
             eError = IPSEC_ERR_CANCELLED;
         }
         else {
-            memcpy(pWaiter->EventContext.acViciSocketPath,
-                   pContext->acViciSocketPath, sizeof(pContext->acViciSocketPath));
-            pWaiter->EventContext.uiConnectTimeoutMs = pContext->uiConnectTimeoutMs;
-            pWaiter->EventContext.uiCommandTimeoutMs = pContext->uiCommandTimeoutMs;
-            pWaiter->EventContext.iTransportCancelFd = pWaiter->aiCancelSockets[0];
+            memcpy(pWaiter->EventContext.Vici.acSocketPath,
+                   pContext->Vici.acSocketPath, sizeof(pContext->Vici.acSocketPath));
+            pWaiter->EventContext.Vici.uiConnectTimeoutMs =
+                pContext->Vici.uiConnectTimeoutMs;
+            pWaiter->EventContext.Vici.uiCommandTimeoutMs =
+                pContext->Vici.uiCommandTimeoutMs;
+            pWaiter->EventContext.Vici.iTransportCancelFd =
+                pWaiter->aiCancelSockets[0];
             pWaiter->ullDeadlineMs = ullDeadlineMs;
-            pWaiter->pNext = pContext->pWaiters;
-            pContext->pWaiters = pWaiter;
+            pWaiter->pNext = pContext->Command.pWaiters;
+            pContext->Command.pWaiters = pWaiter;
         }
-        (void)pthread_mutex_unlock(&pContext->CommandMutex);
+        (void)pthread_mutex_unlock(&pContext->Command.Mutex);
     }
     if (IPSEC_OK != eError) {
         (void)close(pWaiter->aiCancelSockets[0]);
@@ -110,8 +113,8 @@ void EndViciWait(IpsecContext_t *pContext, ViciWaiter_t *pWaiter)
     ViciWaiter_t **ppCurrent;
 
     DisconnectViciTransport(&pWaiter->EventContext);
-    (void)pthread_mutex_lock(&pContext->CommandMutex);
-    for (ppCurrent = &pContext->pWaiters; NULL != *ppCurrent;
+    (void)pthread_mutex_lock(&pContext->Command.Mutex);
+    for (ppCurrent = &pContext->Command.pWaiters; NULL != *ppCurrent;
          ppCurrent = &(*ppCurrent)->pNext) {
         if (*ppCurrent == pWaiter) {
             *ppCurrent = pWaiter->pNext;
@@ -120,17 +123,17 @@ void EndViciWait(IpsecContext_t *pContext, ViciWaiter_t *pWaiter)
     }
     (void)close(pWaiter->aiCancelSockets[0]);
     (void)close(pWaiter->aiCancelSockets[1]);
-    (void)pthread_cond_broadcast(&pContext->CommandCondition);
-    (void)pthread_mutex_unlock(&pContext->CommandMutex);
+    (void)pthread_cond_broadcast(&pContext->Command.Condition);
+    (void)pthread_mutex_unlock(&pContext->Command.Mutex);
     /* The caller must not touch pContext after releasing its wait entry. */
 }
 
 static void SetViciWaitFrameDeadline(ViciWaiter_t *pWaiter)
 {
     uint64_t ullLimitMs = GetIpsecMonotonicMilliseconds() +
-                          pWaiter->EventContext.uiCommandTimeoutMs;
+                          pWaiter->EventContext.Vici.uiCommandTimeoutMs;
 
-    pWaiter->EventContext.ullCommandDeadlineMs =
+    pWaiter->EventContext.Vici.ullCommandDeadlineMs =
         (ullLimitMs < pWaiter->ullDeadlineMs) ? ullLimitMs : pWaiter->ullDeadlineMs;
 }
 

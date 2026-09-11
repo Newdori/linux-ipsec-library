@@ -5,33 +5,33 @@
 IpsecError_t InitializeIpsecPlainPath(IpsecContext_t *pContext)
 {
     IpsecError_t eError;
-    if (IPSEC_PACKET_PATH_SYSTEM == pContext->DatapathConfig.ePlainPacketPath) {
-        pContext->pPlainPathOps = GetSystemPlainPathOps();
+    if (IPSEC_PACKET_PATH_SYSTEM == pContext->Datapath.Config.ePlainPacketPath) {
+        pContext->PlainPath.pOps = GetSystemPlainPathOps();
     }
-    else if (IPSEC_PACKET_PATH_APPLICATION == pContext->DatapathConfig.ePlainPacketPath) {
-        pContext->pPlainPathOps = GetApplicationPlainPathOps();
+    else if (IPSEC_PACKET_PATH_APPLICATION == pContext->Datapath.Config.ePlainPacketPath) {
+        pContext->PlainPath.pOps = GetApplicationPlainPathOps();
     }
     else {
         return IPSEC_ERR_INVALID_PACKET_PATH;
     }
-    eError = pContext->pPlainPathOps->pInitialize(pContext);
+    eError = pContext->PlainPath.pOps->pInitialize(pContext);
     if (IPSEC_OK == eError) {
-        pContext->bPlainPathInitialized = true;
+        pContext->PlainPath.bInitialized = true;
     }
     else {
-        pContext->pPlainPathOps->pDeinitialize(pContext);
-        pContext->pPlainPathOps = NULL;
+        pContext->PlainPath.pOps->pDeinitialize(pContext);
+        pContext->PlainPath.pOps = NULL;
     }
     return eError;
 }
 
 void DeinitializeIpsecPlainPath(IpsecContext_t *pContext)
 {
-    if (NULL != pContext->pPlainPathOps) {
-        pContext->pPlainPathOps->pDeinitialize(pContext);
+    if (NULL != pContext->PlainPath.pOps) {
+        pContext->PlainPath.pOps->pDeinitialize(pContext);
     }
-    pContext->pPlainPathOps = NULL;
-    pContext->bPlainPathInitialized = false;
+    pContext->PlainPath.pOps = NULL;
+    pContext->PlainPath.bInitialized = false;
 }
 
 IpsecError_t GetIpsecPlainPathStatusInternal(IpsecContext_t *pContext,
@@ -41,10 +41,10 @@ IpsecError_t GetIpsecPlainPathStatusInternal(IpsecContext_t *pContext,
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     memset(pStatus, 0, sizeof(*pStatus));
-    if (NULL == pContext->pPlainPathOps) {
+    if (NULL == pContext->PlainPath.pOps) {
         return IPSEC_ERR_PLAIN_PATH_UNAVAILABLE;
     }
-    return pContext->pPlainPathOps->pGetStatus(pContext, pStatus);
+    return pContext->PlainPath.pOps->pGetStatus(pContext, pStatus);
 }
 
 IpsecError_t ReceiveIpsecPlainPacket(IpsecContext_t *pContext,
@@ -56,8 +56,8 @@ IpsecError_t ReceiveIpsecPlainPacket(IpsecContext_t *pContext,
     }
     pPacket->zLength = 0U;
     pPacket->eFamily = IPSEC_ADDRESS_FAMILY_UNSPECIFIED;
-    if (!pContext->bPlainPathInitialized || (NULL == pContext->pPlainPathOps)) {
+    if (!pContext->PlainPath.bInitialized || (NULL == pContext->PlainPath.pOps)) {
         return IPSEC_ERR_PLAIN_PATH_UNAVAILABLE;
     }
-    return pContext->pPlainPathOps->pReceivePacket(pContext, pPacket, uiTimeoutMs);
+    return pContext->PlainPath.pOps->pReceivePacket(pContext, pPacket, uiTimeoutMs);
 }

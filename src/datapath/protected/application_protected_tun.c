@@ -302,7 +302,7 @@ IpsecError_t CreateIpsecProtectedApplicationEndpoint(IpsecContext_t *pContext, I
     if (IPSEC_OK == eError) {
         eError = InspectIpsecProtectedApplicationFilters(pState, true);
     }
-    if ((IPSEC_OK == eError) && (IPSEC_DATAPATH_KERNEL_XFRM == pContext->eActiveDatapath)) {
+    if ((IPSEC_OK == eError) && (IPSEC_DATAPATH_KERNEL_XFRM == pContext->Datapath.eActiveType)) {
         eError = ValidateXfrmSoftwarePath();
     }
     if (IPSEC_OK == eError) {

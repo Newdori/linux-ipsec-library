@@ -26,7 +26,8 @@ typedef enum TestMode {
     TEST_PARTIAL_FRAME,
     TEST_REJECT_SECRET,
     TEST_UNLOAD_ABSENT,
-    TEST_UNLOAD_PRESENT
+    TEST_UNLOAD_PRESENT,
+    TEST_CREDENTIALS
 } TestMode_t;
 
 typedef struct TestClient {
@@ -47,6 +48,9 @@ typedef struct TestServer {
     atomic_bool bHeld;
     atomic_uint uiQueries;
     atomic_uint uiAccepted;
+    atomic_uint uiCredentialLoads;
+    atomic_uint uiCredentialUnloads;
+    atomic_uint uiCredentialClears;
     bool bReady;
     int32_t iHeldSocket;
     uint64_t ullReleaseMs;
@@ -229,6 +233,24 @@ static void HandleTestPacket(TestServer_t *pServer, TestClient_t *pClient,
         SendTestPacket(pClient->iSocket, VICI_PACKET_COMMAND_RESPONSE, NULL, &Message);
         DestroyViciBuffer(&Message);
     }
+    else if ((TEST_CREDENTIALS == pServer->eMode) &&
+             (MatchTestName(pView, "load-shared") ||
+              MatchTestName(pView, "unload-shared") ||
+              MatchTestName(pView, "clear-creds"))) {
+        if (MatchTestName(pView, "load-shared")) {
+            (void)atomic_fetch_add(&pServer->uiCredentialLoads, 1U);
+        }
+        else if (MatchTestName(pView, "unload-shared")) {
+            (void)atomic_fetch_add(&pServer->uiCredentialUnloads, 1U);
+        }
+        else {
+            (void)atomic_fetch_add(&pServer->uiCredentialClears, 1U);
+        }
+        CHECK(IPSEC_OK == InitializeViciBuffer(&Message, 32U, false));
+        CHECK(IPSEC_OK == AddViciKeyValueString(&Message, "success", "yes"));
+        SendTestPacket(pClient->iSocket, VICI_PACKET_COMMAND_RESPONSE, NULL, &Message);
+        DestroyViciBuffer(&Message);
+    }
     else {
         SendTestPacket(pClient->iSocket, VICI_PACKET_COMMAND_RESPONSE, NULL, NULL);
     }
@@ -322,6 +344,9 @@ static IpsecContext_t *StartTestServer(TestServer_t *pServer, TestMode_t eMode)
     atomic_init(&pServer->bHeld, false);
     atomic_init(&pServer->uiQueries, 0U);
     atomic_init(&pServer->uiAccepted, 0U);
+    atomic_init(&pServer->uiCredentialLoads, 0U);
+    atomic_init(&pServer->uiCredentialUnloads, 0U);
+    atomic_init(&pServer->uiCredentialClears, 0U);
     pServer->eMode = eMode;
     for (uiIndex = 0U; uiIndex < TEST_CLIENT_LIMIT; uiIndex++) {
         pServer->aClients[uiIndex].iSocket = -1;
@@ -476,7 +501,7 @@ static void TestStreamRecovery(void)
 
     CHECK(IPSEC_ERR_VICI_PROTOCOL == GetIpsecIkeSas(pContext, &List));
     CHECK(NULL == List.pItems);
-    CHECK(pContext->iViciSocket < 0);
+    CHECK(pContext->Vici.iSocket < 0);
     Diagnostic.uiStructSize = sizeof(Diagnostic);
     CHECK(IPSEC_OK == GetIpsecLastDiagnostic(pContext, &Diagnostic));
     CHECK(IPSEC_STAGE_RECEIVE == Diagnostic.eStage);
@@ -499,6 +524,8 @@ static void TestSensitiveDiagnostic(void)
     Psk.uiStructSize = sizeof(Psk);
     Psk.pucData = (const uint8_t *)"SECRET_TEST_VALUE";
     Psk.uiDataLength = 17U;
+    CHECK(IPSEC_ERR_INVALID_ARGUMENT ==
+        AddIpsecConnection(pContext, NULL));
     CHECK(IPSEC_ERR_INVALID_ARGUMENT == AddIpsecPsk(pContext, NULL));
     CHECK(IPSEC_ERR_VICI_COMMAND == AddIpsecPsk(pContext, &Psk));
     Diagnostic.uiStructSize = sizeof(Diagnostic);
@@ -535,6 +562,37 @@ static void VerifyIdempotentUnload(bool bPresent)
     StopTestServer(&Server, pContext);
 }
 
+static void VerifyCredentialOwnership(void)
+{
+    TestServer_t Server;
+    IpsecContext_t *pContext = StartTestServer(&Server, TEST_CREDENTIALS);
+    const char *apcOwners[] = {"side-a", "side-b"};
+    IpsecPsk_t Psk = {
+        .uiStructSize = sizeof(Psk),
+        .pcId = "credential-1",
+        .pucData = (const uint8_t *)"TEST_PSK_VALUE",
+        .uiDataLength = 14U,
+        .Owners = {.ppcItems = apcOwners, .uiCount = 2U}
+    };
+
+    CHECK(IPSEC_OK == AddIpsecPsk(pContext, &Psk));
+    CHECK(IPSEC_OK == AddIpsecPsk(pContext, &Psk));
+    CHECK(2U == atomic_load(&Server.uiCredentialLoads));
+    CHECK(IPSEC_OK == ClearIpsecContextCredentials(pContext));
+    CHECK(1U == atomic_load(&Server.uiCredentialUnloads));
+    CHECK(IPSEC_OK == ClearIpsecContextCredentials(pContext));
+    CHECK(1U == atomic_load(&Server.uiCredentialUnloads));
+
+    Psk.pcId = NULL;
+    CHECK(IPSEC_OK == AddIpsecPsk(pContext, &Psk));
+    CHECK(IPSEC_ERR_NOT_SUPPORTED ==
+        ClearIpsecContextCredentials(pContext));
+    CHECK(IPSEC_OK == ClearAllIpsecDaemonCredentials(pContext));
+    CHECK(1U == atomic_load(&Server.uiCredentialClears));
+    CHECK(IPSEC_OK == ClearIpsecContextCredentials(pContext));
+    StopTestServer(&Server, pContext);
+}
+
 int main(void)
 {
     TestEventWait(false, TEST_EVENT);
@@ -550,5 +608,6 @@ int main(void)
     TestSensitiveDiagnostic();
     VerifyIdempotentUnload(false);
     VerifyIdempotentUnload(true);
+    VerifyCredentialOwnership();
     return 0;
 }

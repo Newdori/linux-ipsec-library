@@ -30,9 +30,6 @@ bool ParseNativeAppStartupOptions(
         else if (0 == strcmp("--config", pcArgument)) {
             ppcPath = &pOptions->pcConfigPath;
         }
-        else if (0 == strcmp("--management-config", pcArgument)) {
-            ppcPath = &pOptions->pcManagementConfigPath;
-        }
         else if (0 == strcmp("--generate-psk", pcArgument)) {
             ppcPath = &pOptions->pcGeneratePskPath;
         }

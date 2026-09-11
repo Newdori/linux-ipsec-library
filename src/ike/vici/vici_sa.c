@@ -59,7 +59,7 @@ static IpsecError_t AddSaControlTimeout(
     IpsecError_t eError;
 
     if (NULL == pOptions) {
-        uiTimeoutMs = pContext->uiCommandTimeoutMs;
+        uiTimeoutMs = pContext->Vici.uiCommandTimeoutMs;
         iLength = (int32_t)snprintf(acTimeout, sizeof(acTimeout), "%u",
                                     uiTimeoutMs);
         eError = IPSEC_OK;
@@ -76,8 +76,8 @@ static IpsecError_t AddSaControlTimeout(
     }
     else {
         uiTimeoutMs = (0U == pOptions->uiTimeoutMs) ?
-                      pContext->uiCommandTimeoutMs : pOptions->uiTimeoutMs;
-        if (pContext->uiCommandTimeoutMs < uiTimeoutMs) {
+                      pContext->Vici.uiCommandTimeoutMs : pOptions->uiTimeoutMs;
+        if (pContext->Vici.uiCommandTimeoutMs < uiTimeoutMs) {
             iLength = -1;
             eError = IPSEC_ERR_INVALID_ARGUMENT;
         }

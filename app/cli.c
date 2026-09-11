@@ -20,7 +20,6 @@ typedef struct NativeAppSession {
     pthread_mutex_t OutputMutex;
     char acConfigPath[NATIVE_APP_PATH_LENGTH];
     char acApplicationConfigPath[NATIVE_APP_PATH_LENGTH];
-    char acManagementConfigPath[NATIVE_APP_PATH_LENGTH];
     bool bConfigValid;
     NativeAppPeerState_t ePeerState;
     bool bConnectionLoaded;
@@ -159,7 +158,6 @@ static void PrintNativeAppUsage(const char *pcProgram)
         "  -v        enable verbose logging\n"
         "  -h        show this help\n"
         "Long aliases: --app-config FILE, --verbose, --help.\n"
-        "Optional legacy override: --management-config LEGACY_FILE (with -c).\n"
         "Place startup options before COMMAND.\n"
         "\n"
         "Without COMMAND, ipsec_app starts an interactive CLI session.\n"
@@ -347,7 +345,6 @@ static void ShowNativeAppConfig(const NativeAppSession_t *pSession)
         "[CONFIGURATION]\n"
         "  Legacy Path      : %s\n"
         "  Application Path : %s\n"
-        "  Management Path  : %s\n"
         "  Valid            : %s\n"
         "  Role             : %s\n"
         "  Local Address    : %s\n"
@@ -373,8 +370,6 @@ static void ShowNativeAppConfig(const NativeAppSession_t *pSession)
             "<none>",
         ('\0' != pSession->acApplicationConfigPath[0]) ?
             pSession->acApplicationConfigPath : "<none>",
-        ('\0' != pSession->acManagementConfigPath[0]) ?
-            pSession->acManagementConfigPath : "<none>",
         pSession->bConfigValid ? "yes" : "no",
         GetNativeAppRoleText(pConfig->eRole), pConfig->acLocalAddress,
         pConfig->acRemoteAddress, pConfig->acLocalTrafficSelector,
@@ -959,7 +954,6 @@ static IpsecError_t LoadNativeAppSessionConfig(
         pSession->Config = Config;
         pSession->BaseConfig = Config;
         pSession->acApplicationConfigPath[0] = '\0';
-        pSession->acManagementConfigPath[0] = '\0';
         pSession->bCredentialLoaded = false;
         UpdateNativeAppSessionPeerState(pSession);
         pSession->bConfigValid = false;
@@ -1258,7 +1252,7 @@ static IpsecError_t ExecuteNativeAppCredentialCommand(
             eError = IPSEC_ERR_INVALID_ARGUMENT;
         }
         else if (IPSEC_OK == eError) {
-            eError = ClearIpsecCredentials(pSession->pContext);
+            eError = ClearAllIpsecDaemonCredentials(pSession->pContext);
         }
         else {
             /* Preserve the SA status query error. */
@@ -2425,7 +2419,6 @@ int32_t RunNativeAppCli(
     else if (NULL != Options.pcGeneratePskPath) {
         if ((NULL != Options.pcConfigPath) ||
             (NULL != Options.pcApplicationConfigPath) ||
-            (NULL != Options.pcManagementConfigPath) ||
             (Options.iCommandIndex < iArgumentCount)) {
             PrintNativeAppUsage(ppcArguments[0]);
             return 2;
@@ -2448,11 +2441,8 @@ int32_t RunNativeAppCli(
     else {
         bool bHasApplicationConfig =
             (NULL != Options.pcApplicationConfigPath);
-        bool bHasManagementConfig =
-            (NULL != Options.pcManagementConfigPath);
 
-        if ((!bHasApplicationConfig && bHasManagementConfig) ||
-            ((NULL != Options.pcConfigPath) && bHasApplicationConfig)) {
+        if ((NULL != Options.pcConfigPath) && bHasApplicationConfig) {
             PrintNativeAppUsage(ppcArguments[0]);
             return 2;
         }
@@ -2471,20 +2461,14 @@ int32_t RunNativeAppCli(
     }
 
     if (NULL != Options.pcApplicationConfigPath) {
-        eError = LoadNativeAppConfigFiles(
-            Options.pcApplicationConfigPath,
-            Options.pcManagementConfigPath, &Session.Config,
+        eError = LoadNativeAppApplicationConfig(
+            Options.pcApplicationConfigPath, &Session.Config,
             acError, sizeof(acError));
         if ((IPSEC_OK == eError) &&
             CopyNativeAppSessionText(
                 Session.acApplicationConfigPath,
                 sizeof(Session.acApplicationConfigPath),
-                Options.pcApplicationConfigPath) &&
-            ((NULL == Options.pcManagementConfigPath) ||
-             CopyNativeAppSessionText(
-                 Session.acManagementConfigPath,
-                 sizeof(Session.acManagementConfigPath),
-                 Options.pcManagementConfigPath))) {
+                Options.pcApplicationConfigPath)) {
             Session.BaseConfig = Session.Config;
             Session.bConfigValid = false;
         }
@@ -2492,7 +2476,7 @@ int32_t RunNativeAppCli(
             eError = IPSEC_ERR_BUFFER_TOO_SMALL;
         }
         else {
-            /* Report the split configuration error below. */
+            /* Report the application configuration error below. */
         }
     }
     else if (NULL != Options.pcConfigPath) {

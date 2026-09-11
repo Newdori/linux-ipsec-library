@@ -2,6 +2,7 @@ IPSEC_0.2 {
     global:
         GetIpsecErrorString;
         GenerateIpsecPskFile;
+        InitializeIpsecControl;
         InitializeIpsec;
         InitializeIpsecWithDatapath;
         DeinitializeIpsec;
@@ -13,6 +14,8 @@ IPSEC_0.2 {
         FreeIpsecConnectionList;
         AddIpsecPsk;
         RemoveIpsecPsk;
+        ClearIpsecContextCredentials;
+        ClearAllIpsecDaemonCredentials;
         ClearIpsecCredentials;
         InitiateIpsecIke;
         TerminateIpsecIke;
@@ -31,6 +34,7 @@ IPSEC_0.2 {
         GetIpsecDaemonStatus;
         GetIpsecDatapathStatus;
         GetIpsecDatapathStatusEx;
+        GetIpsecRuntimeStatus;
         GetIpsecTrafficStatistics;
         GetIpsecPacketPathStatus;
         ReceiveIpsecProtectedPacket;

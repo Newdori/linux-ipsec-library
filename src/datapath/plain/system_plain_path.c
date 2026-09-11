@@ -18,7 +18,7 @@ static IpsecError_t ReceiveSystemPlainPacket(IpsecContext_t *pContext,
 static IpsecError_t GetSystemPlainPathStatus(IpsecContext_t *pContext,
     IpsecPlainPathStatusInternal_t *pStatus)
 {
-    pStatus->bReady = pContext->bPlainPathInitialized;
+    pStatus->bReady = pContext->PlainPath.bInitialized;
     return IPSEC_OK;
 }
 

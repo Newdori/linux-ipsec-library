@@ -202,4 +202,15 @@ IpsecError_t ParseViciDaemonStatusMessage(
     uint32_t uiMessageLength,
     IpsecDaemonStatus_t *pStatus);
 
+IpsecError_t ValidateViciConnectionConfigInternal(
+    const IpsecConnectionConfig_t *pConfig);
+
+IpsecError_t LoadViciConnectionInternal(
+    IpsecContext_t *pContext,
+    const IpsecConnectionConfig_t *pConfig);
+
+IpsecError_t UnloadViciConnectionInternal(
+    IpsecContext_t *pContext,
+    const char *pcName);
+
 #endif

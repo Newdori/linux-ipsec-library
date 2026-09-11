@@ -7,12 +7,12 @@ static IpsecError_t InitializeApplicationPlainPath(IpsecContext_t *pContext)
 {
     IpsecPlainApplicationState_t *pState;
     IpsecError_t eError;
-    if (!pContext->bDatapathInitialized ||
-        (0U == pContext->DatapathConfig.usPlainQueueNumber)) {
+    if (!pContext->Datapath.bInitialized ||
+        (0U == pContext->Datapath.Config.usPlainQueueNumber)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
-    if (pContext->DatapathConfig.bManagePlainNetfilterRule &&
-        (IPSEC_DATAPATH_KERNEL_LIBIPSEC != pContext->eActiveDatapath)) {
+    if (pContext->Datapath.Config.bManagePlainNetfilterRule &&
+        (IPSEC_DATAPATH_KERNEL_LIBIPSEC != pContext->Datapath.eActiveType)) {
         return IPSEC_ERR_NOT_SUPPORTED;
     }
     pState = (IpsecPlainApplicationState_t *)calloc(1U, sizeof(*pState));
@@ -21,14 +21,14 @@ static IpsecError_t InitializeApplicationPlainPath(IpsecContext_t *pContext)
     }
     pState->iQueueSocket = -1;
     pState->iRuleSocket = -1;
-    pState->usQueueNumber = pContext->DatapathConfig.usPlainQueueNumber;
-    if (IPSEC_DATAPATH_KERNEL_LIBIPSEC == pContext->eActiveDatapath) {
-        pState->uiExpectedInterfaceIndex = pContext->uiDatapathInterfaceIndex;
+    pState->usQueueNumber = pContext->Datapath.Config.usPlainQueueNumber;
+    if (IPSEC_DATAPATH_KERNEL_LIBIPSEC == pContext->Datapath.eActiveType) {
+        pState->uiExpectedInterfaceIndex = pContext->Datapath.uiInterfaceIndex;
     }
-    pContext->pPlainApplicationState = pState;
+    pContext->PlainPath.pApplicationState = pState;
     eError = OpenIpsecPlainQueue(pContext, pState);
     if ((IPSEC_OK == eError) &&
-        pContext->DatapathConfig.bManagePlainNetfilterRule) {
+        pContext->Datapath.Config.bManagePlainNetfilterRule) {
         if (0 != pthread_mutex_init(&pState->PeerMutex, NULL)) {
             eError = IPSEC_ERR_INTERNAL;
         }
@@ -47,22 +47,22 @@ static IpsecError_t ReceiveApplicationPlainPacket(IpsecContext_t *pContext,
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     return ReceiveIpsecPlainQueuePacket(
-        pContext->pPlainApplicationState, pPacket, uiTimeoutMs);
+        pContext->PlainPath.pApplicationState, pPacket, uiTimeoutMs);
 }
 
 static IpsecError_t GetApplicationPlainPathStatus(IpsecContext_t *pContext,
     IpsecPlainPathStatusInternal_t *pStatus)
 {
-    const IpsecPlainApplicationState_t *pState = pContext->pPlainApplicationState;
+    const IpsecPlainApplicationState_t *pState = pContext->PlainPath.pApplicationState;
     if ((NULL == pState) || (pState->iQueueSocket < 0) || !pState->bQueueBound) {
         return IPSEC_ERR_PLAIN_PATH_UNAVAILABLE;
     }
-    pStatus->bReady = pContext->bPlainPathInitialized;
+    pStatus->bReady = pContext->PlainPath.bInitialized;
     pStatus->usQueueNumber = pState->usQueueNumber;
     pStatus->uiInterfaceIndex = pState->uiExpectedInterfaceIndex;
     if ((0U != pState->uiExpectedInterfaceIndex) &&
-        ('\0' != pContext->acDatapathInterfaceName[0])) {
-        memcpy(pStatus->acInterfaceName, pContext->acDatapathInterfaceName,
+        ('\0' != pContext->Datapath.acInterfaceName[0])) {
+        memcpy(pStatus->acInterfaceName, pContext->Datapath.acInterfaceName,
                sizeof(pStatus->acInterfaceName));
     }
     return IPSEC_OK;
@@ -70,12 +70,12 @@ static IpsecError_t GetApplicationPlainPathStatus(IpsecContext_t *pContext,
 
 static void DeinitializeApplicationPlainPath(IpsecContext_t *pContext)
 {
-    if (NULL != pContext->pPlainApplicationState) {
+    if (NULL != pContext->PlainPath.pApplicationState) {
         DeinitializeIpsecPlainRules(
-            pContext, pContext->pPlainApplicationState);
-        CloseIpsecPlainQueue(pContext->pPlainApplicationState);
-        free(pContext->pPlainApplicationState);
-        pContext->pPlainApplicationState = NULL;
+            pContext, pContext->PlainPath.pApplicationState);
+        CloseIpsecPlainQueue(pContext->PlainPath.pApplicationState);
+        free(pContext->PlainPath.pApplicationState);
+        pContext->PlainPath.pApplicationState = NULL;
     }
 }
 

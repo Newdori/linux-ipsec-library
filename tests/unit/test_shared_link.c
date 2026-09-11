@@ -7,6 +7,7 @@ int main(void)
     IpsecIkeSaList_t List = {0};
     IpsecDiagnostic_t Diagnostic = {0};
     IpsecDatapathStatusEx_t Status = {.uiStructSize = sizeof(Status)};
+    IpsecRuntimeStatus_t Runtime = {.uiStructSize = sizeof(Runtime)};
     IpsecPacketPathStatus_t PathStatus = {.uiStructSize = sizeof(PathStatus)};
     IpsecProtectedPacket_t Protected = {.uiStructSize = sizeof(Protected)};
     IpsecPlainPacket_t Plain = {.uiStructSize = sizeof(Plain)};
@@ -18,11 +19,15 @@ int main(void)
         (IPSEC_ERR_INVALID_ARGUMENT != CancelIpsecWaits(NULL)) ||
         (IPSEC_ERR_INVALID_ARGUMENT != GetIpsecLastDiagnostic(NULL, &Diagnostic)) ||
         (IPSEC_ERR_INVALID_ARGUMENT != GetIpsecDatapathStatusEx(NULL, &Status)) ||
+        (IPSEC_ERR_INVALID_ARGUMENT != GetIpsecRuntimeStatus(NULL, &Runtime)) ||
         (IPSEC_ERR_INVALID_ARGUMENT != GetIpsecPacketPathStatus(NULL, &PathStatus)) ||
         (IPSEC_ERR_INVALID_ARGUMENT != ReceiveIpsecProtectedPacket(NULL, &Protected, 0U)) ||
         (IPSEC_ERR_INVALID_ARGUMENT != SubmitIpsecProtectedPacket(NULL, &Protected)) ||
         (IPSEC_ERR_INVALID_ARGUMENT != ReceiveIpsecPlainPacket(NULL, &Plain, 0U)) ||
-        (IPSEC_ERR_INVALID_ARGUMENT != InitializeIpsecWithDatapath(NULL, NULL, NULL))) {
+        (IPSEC_ERR_INVALID_ARGUMENT != InitializeIpsecControl(NULL, NULL)) ||
+        (IPSEC_ERR_INVALID_ARGUMENT != InitializeIpsecWithDatapath(NULL, NULL, NULL)) ||
+        (IPSEC_ERR_INVALID_ARGUMENT != ClearIpsecContextCredentials(NULL)) ||
+        (IPSEC_ERR_INVALID_ARGUMENT != ClearAllIpsecDaemonCredentials(NULL))) {
         return 1;
     }
     (void)pContext;

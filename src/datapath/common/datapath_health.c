@@ -17,8 +17,8 @@ IpsecError_t GetIpsecDatapathStatusEx(IpsecContext_t *pContext,
     memset(pStatus, 0, sizeof(*pStatus));
     pStatus->uiStructSize = sizeof(*pStatus);
     pStatus->eProtectedPacketPath =
-        pContext->DatapathConfig.eProtectedPacketPath;
-    pStatus->ePlainPacketPath = pContext->DatapathConfig.ePlainPacketPath;
+        pContext->Datapath.Config.eProtectedPacketPath;
+    pStatus->ePlainPacketPath = pContext->Datapath.Config.ePlainPacketPath;
     eError = GetIpsecDatapathStatus(pContext, &pStatus->Backend);
     if (IPSEC_OK == eError) {
         pStatus->bBackendReady = pStatus->Backend.bReady;
@@ -62,5 +62,38 @@ IpsecError_t GetIpsecDatapathStatusEx(IpsecContext_t *pContext,
          (pStatus->Backend.uiTunRouteCount > 0U));
     FreeIpsecChildSaList(&Children);
     FreeIpsecIkeSaList(&Ikes);
+    return eError;
+}
+
+IpsecError_t GetIpsecRuntimeStatus(IpsecContext_t *pContext,
+                                   IpsecRuntimeStatus_t *pStatus)
+{
+    IpsecError_t eError;
+
+    if ((NULL == pContext) || (NULL == pStatus) ||
+        (sizeof(*pStatus) != pStatus->uiStructSize)) {
+        return IPSEC_ERR_INVALID_ARGUMENT;
+    }
+    memset(pStatus, 0, sizeof(*pStatus));
+    pStatus->uiStructSize = sizeof(*pStatus);
+    pStatus->Datapath.uiStructSize = sizeof(pStatus->Datapath);
+    eError = GetIpsecDaemonStatus(pContext, &pStatus->Daemon);
+    if (IPSEC_OK == eError) {
+        pStatus->bDaemonReady = true;
+        eError = GetIpsecDatapathStatusEx(
+            pContext, &pStatus->Datapath);
+        if (IPSEC_OK == eError) {
+            pStatus->bDatapathReady =
+                pStatus->Datapath.bBackendReady &&
+                pStatus->Datapath.bProtectedPathReady &&
+                pStatus->Datapath.bPlainPathReady;
+        }
+        else {
+            /* Daemon readiness remains available to the caller. */
+        }
+    }
+    else {
+        /* Preserve daemon status error. */
+    }
     return eError;
 }

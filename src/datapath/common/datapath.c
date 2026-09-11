@@ -63,7 +63,7 @@ IpsecError_t ConfigureIpsecDatapath(IpsecContext_t *pContext,
         (NULL == memchr(Config.acProtectedRemoteAddress, '\0', sizeof(Config.acProtectedRemoteAddress)))) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
-    pContext->DatapathConfig = Config;
+    pContext->Datapath.Config = Config;
     return IPSEC_OK;
 }
 
@@ -85,7 +85,7 @@ IpsecError_t SelectIpsecDatapath(IpsecContext_t *pContext,
     IpsecDatapathStatus_t Status = {0};
     IpsecError_t eError = IPSEC_ERR_DATAPATH_UNAVAILABLE;
     const IpsecDatapathOps_t *pSelected = NULL;
-    IpsecDatapathPreference_t ePreference = pContext->DatapathConfig.ePreference;
+    IpsecDatapathPreference_t ePreference = pContext->Datapath.Config.ePreference;
 
     if (IPSEC_DATAPATH_PREFER_XFRM != ePreference) {
         eError = pLibipsec->pProbe(pContext, &Status);
@@ -108,27 +108,27 @@ IpsecError_t SelectIpsecDatapath(IpsecContext_t *pContext,
         }
     }
     if (NULL != pSelected) {
-        pContext->pDatapathOps = pSelected;
-        pContext->eActiveDatapath = pSelected->eType;
-        pContext->uiDatapathInterfaceIndex = Status.uiTunInterfaceIndex;
-        if (strlen(Status.acTunInterfaceName) >= sizeof(pContext->acDatapathInterfaceName)) {
+        pContext->Datapath.pOps = pSelected;
+        pContext->Datapath.eActiveType = pSelected->eType;
+        pContext->Datapath.uiInterfaceIndex = Status.uiTunInterfaceIndex;
+        if (strlen(Status.acTunInterfaceName) >= sizeof(pContext->Datapath.acInterfaceName)) {
             eError = IPSEC_ERR_INVALID_ARGUMENT;
         }
         else {
-            memcpy(pContext->acDatapathInterfaceName, Status.acTunInterfaceName,
+            memcpy(pContext->Datapath.acInterfaceName, Status.acTunInterfaceName,
                    strlen(Status.acTunInterfaceName) + 1U);
             eError = pSelected->pInitialize(pContext);
         }
         if (IPSEC_OK == eError) {
-            pContext->bDatapathInitialized = true;
+            pContext->Datapath.bInitialized = true;
         }
         else {
             pSelected->pDeinitialize(pContext);
-            pContext->pDatapathOps = NULL;
-            pContext->eActiveDatapath = IPSEC_DATAPATH_UNKNOWN;
+            pContext->Datapath.pOps = NULL;
+            pContext->Datapath.eActiveType = IPSEC_DATAPATH_UNKNOWN;
         }
     }
-    pContext->eDatapathError = eError;
+    pContext->Datapath.eError = eError;
     return eError;
 }
 
@@ -140,12 +140,12 @@ IpsecError_t InitializeIpsecDatapath(IpsecContext_t *pContext)
 
 void DeinitializeIpsecDatapath(IpsecContext_t *pContext)
 {
-    if (pContext->bDatapathInitialized) {
-        pContext->pDatapathOps->pDeinitialize(pContext);
-        pContext->bDatapathInitialized = false;
+    if (pContext->Datapath.bInitialized) {
+        pContext->Datapath.pOps->pDeinitialize(pContext);
+        pContext->Datapath.bInitialized = false;
     }
-    pContext->pDatapathOps = NULL;
-    pContext->eActiveDatapath = IPSEC_DATAPATH_UNKNOWN;
+    pContext->Datapath.pOps = NULL;
+    pContext->Datapath.eActiveType = IPSEC_DATAPATH_UNKNOWN;
 }
 
 IpsecError_t GetIpsecDatapathStatus(IpsecContext_t *pContext,
@@ -155,11 +155,11 @@ IpsecError_t GetIpsecDatapathStatus(IpsecContext_t *pContext,
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     memset(pStatus, 0, sizeof(*pStatus));
-    if (NULL == pContext->pDatapathOps) {
-        return (IPSEC_OK != pContext->eDatapathError) ?
-            pContext->eDatapathError : IPSEC_ERR_DATAPATH_UNAVAILABLE;
+    if (NULL == pContext->Datapath.pOps) {
+        return (IPSEC_OK != pContext->Datapath.eError) ?
+            pContext->Datapath.eError : IPSEC_ERR_DATAPATH_UNAVAILABLE;
     }
-    return pContext->pDatapathOps->pGetStatus(pContext, pStatus);
+    return pContext->Datapath.pOps->pGetStatus(pContext, pStatus);
 }
 
 IpsecError_t RequireIpsecXfrmBackend(IpsecContext_t *pContext)
@@ -185,7 +185,7 @@ IpsecError_t GetIpsecTrafficStatistics(IpsecContext_t *pContext,
     pStatistics->uiStructSize = sizeof(*pStatistics);
     eError = GetIpsecDatapathStatus(pContext, &Status);
     if (IPSEC_OK == eError) {
-        eError = pContext->pDatapathOps->pGetStatistics(pContext, pStatistics);
+        eError = pContext->Datapath.pOps->pGetStatistics(pContext, pStatistics);
     }
     return eError;
 }

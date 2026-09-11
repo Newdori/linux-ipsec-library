@@ -15,51 +15,7 @@ COMMON_CPPFLAGS := -I../include -Iinternal -Iike/vici -Idatapath/common \
 	-Idatapath/plain -Inetwork
 COMMON_LDLIBS := -pthread
 
-SOURCES := \
-	core/buffer_validate.c \
-	core/context.c \
-	core/error.c \
-	core/ipsec.c \
-	core/log.c \
-	core/netlink.c \
-	core/psk.c \
-	core/secure_zero.c \
-	core/util.c \
-	ike/vici/vici_algorithm.c \
-	ike/vici/vici_client.c \
-	ike/vici/vici_connection.c \
-	ike/vici/vici_credential.c \
-	ike/vici/vici_packet.c \
-	ike/vici/vici_parser.c \
-	ike/vici/vici_sa.c \
-	ike/vici/vici_stats.c \
-	ike/vici/vici_transport.c \
-	ike/vici/vici_wait.c \
-	datapath/common/datapath.c \
-	datapath/common/datapath_health.c \
-	datapath/common/packet_path.c \
-	datapath/kernel_libipsec/kernel_libipsec_datapath.c \
-	datapath/kernel_libipsec/kernel_libipsec_status.c \
-	datapath/kernel_libipsec/kernel_libipsec_tun.c \
-	datapath/xfrm/xfrm_backend.c \
-	datapath/xfrm/xfrm_policy.c \
-	datapath/xfrm/xfrm_state.c \
-	datapath/xfrm/xfrm_stats.c \
-	datapath/protected/protected_path.c \
-	datapath/protected/system_protected_path.c \
-	datapath/protected/application_protected_path.c \
-	datapath/protected/application_protected_tun.c \
-	datapath/protected/application_protected_filter.c \
-	datapath/protected/application_protected_netlink.c \
-	datapath/protected/protected_packet.c \
-	datapath/plain/plain_path.c \
-	datapath/plain/system_plain_path.c \
-	datapath/plain/application_plain_path.c \
-	datapath/plain/plain_netfilter.c \
-	datapath/plain/plain_nftables.c \
-	network/address.c \
-	network/interface.c \
-	network/route.c
+SOURCES := $(shell sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$$/d' ipsec_sources.list)
 
 PLATFORM ?= undefined
 ARCH_DIRECTORY ?= undefined

@@ -13,7 +13,7 @@ void LogIpsec(
     va_list Arguments;
     int32_t iLength;
 
-    if ((NULL == pContext) || (NULL == pContext->pLogCallback) ||
+    if ((NULL == pContext) || (NULL == pContext->Logger.pCallback) ||
         (NULL == pcFormat)) {
         return;
     }
@@ -29,6 +29,6 @@ void LogIpsec(
             acMessage[sizeof(acMessage) - 1U] = '\0';
         }
 
-        pContext->pLogCallback(eLevel, acMessage, pContext->pvLogUserData);
+        pContext->Logger.pCallback(eLevel, acMessage, pContext->Logger.pvUserData);
     }
 }

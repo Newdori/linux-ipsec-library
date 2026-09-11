@@ -12,21 +12,21 @@ IpsecError_t InitializeIpsecContextState(
     IpsecError_t eError = IPSEC_OK;
     pthread_condattr_t ConditionAttributes;
 
-    pContext->iViciSocket = -1;
-    pContext->iTransportCancelFd = -1;
-    pContext->LastDiagnostic.uiStructSize = sizeof(pContext->LastDiagnostic);
-    pContext->uiConnectTimeoutMs = (0U == pConfig->uiConnectTimeoutMs) ?
+    pContext->Vici.iSocket = -1;
+    pContext->Vici.iTransportCancelFd = -1;
+    pContext->Diagnostic.Last.uiStructSize = sizeof(pContext->Diagnostic.Last);
+    pContext->Vici.uiConnectTimeoutMs = (0U == pConfig->uiConnectTimeoutMs) ?
         IPSEC_DEFAULT_CONNECT_TIMEOUT_MS : pConfig->uiConnectTimeoutMs;
-    pContext->uiCommandTimeoutMs = (0U == pConfig->uiCommandTimeoutMs) ?
+    pContext->Vici.uiCommandTimeoutMs = (0U == pConfig->uiCommandTimeoutMs) ?
         IPSEC_DEFAULT_COMMAND_TIMEOUT_MS : pConfig->uiCommandTimeoutMs;
-    pContext->pLogCallback = pConfig->pLogCallback;
-    pContext->pvLogUserData = pConfig->pvLogUserData;
+    pContext->Logger.pCallback = pConfig->pLogCallback;
+    pContext->Logger.pvUserData = pConfig->pvLogUserData;
 
-    if (0 != pthread_mutex_init(&pContext->CommandMutex, NULL)) {
+    if (0 != pthread_mutex_init(&pContext->Command.Mutex, NULL)) {
         eError = IPSEC_ERR_INTERNAL;
     }
     else {
-        pContext->bCommandMutexInitialized = true;
+        pContext->Command.bMutexInitialized = true;
     }
 
     if (IPSEC_OK == eError) {
@@ -35,31 +35,38 @@ IpsecError_t InitializeIpsecContextState(
         }
         else {
             if ((0 != pthread_condattr_setclock(&ConditionAttributes, CLOCK_MONOTONIC)) ||
-                (0 != pthread_cond_init(&pContext->CommandCondition, &ConditionAttributes))) {
+                (0 != pthread_cond_init(&pContext->Command.Condition, &ConditionAttributes))) {
                 eError = IPSEC_ERR_INTERNAL;
             }
             else {
-                pContext->bCommandConditionInitialized = true;
+                pContext->Command.bConditionInitialized = true;
             }
             (void)pthread_condattr_destroy(&ConditionAttributes);
         }
     }
 
+    if (IPSEC_OK == eError) {
+        eError = InitializeIpsecCredentialState(pContext);
+    }
+    else {
+        /* Preserve command synchronization initialization error. */
+    }
+
     pcSocketPath = pConfig->pcViciSocketPath;
     if ((IPSEC_OK == eError) && (NULL != pcSocketPath)) {
         zSocketPathLength = strnlen(pcSocketPath,
-                                    sizeof(pContext->acViciSocketPath));
+                                    sizeof(pContext->Vici.acSocketPath));
         if ((0U == zSocketPathLength) ||
-            (zSocketPathLength >= sizeof(pContext->acViciSocketPath))) {
+            (zSocketPathLength >= sizeof(pContext->Vici.acSocketPath))) {
             eError = IPSEC_ERR_INVALID_ARGUMENT;
         }
         else {
-            memcpy(pContext->acViciSocketPath, pcSocketPath,
+            memcpy(pContext->Vici.acSocketPath, pcSocketPath,
                    zSocketPathLength + 1U);
         }
     }
     else if (IPSEC_OK == eError) {
-        pContext->acViciSocketPath[0] = '\0';
+        pContext->Vici.acSocketPath[0] = '\0';
     }
     else {
         /* Preserve mutex initialization error. */
@@ -70,13 +77,14 @@ IpsecError_t InitializeIpsecContextState(
 
 void DestroyIpsecContextState(IpsecContext_t *pContext)
 {
-    if (pContext->bCommandConditionInitialized) {
-        (void)pthread_cond_destroy(&pContext->CommandCondition);
-        pContext->bCommandConditionInitialized = false;
+    DestroyIpsecCredentialState(pContext);
+    if (pContext->Command.bConditionInitialized) {
+        (void)pthread_cond_destroy(&pContext->Command.Condition);
+        pContext->Command.bConditionInitialized = false;
     }
-    if (pContext->bCommandMutexInitialized) {
-        (void)pthread_mutex_destroy(&pContext->CommandMutex);
-        pContext->bCommandMutexInitialized = false;
+    if (pContext->Command.bMutexInitialized) {
+        (void)pthread_mutex_destroy(&pContext->Command.Mutex);
+        pContext->Command.bMutexInitialized = false;
     }
 }
 
@@ -88,10 +96,10 @@ IpsecError_t GetIpsecLastDiagnostic(
         (sizeof(*pDiagnostic) != pDiagnostic->uiStructSize)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
-    if (0 != pthread_mutex_lock(&pContext->CommandMutex)) {
+    if (0 != pthread_mutex_lock(&pContext->Command.Mutex)) {
         return IPSEC_ERR_INTERNAL;
     }
-    *pDiagnostic = pContext->LastDiagnostic;
-    (void)pthread_mutex_unlock(&pContext->CommandMutex);
+    *pDiagnostic = pContext->Diagnostic.Last;
+    (void)pthread_mutex_unlock(&pContext->Command.Mutex);
     return IPSEC_OK;
 }

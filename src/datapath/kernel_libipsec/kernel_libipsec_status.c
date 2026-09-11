@@ -14,12 +14,12 @@ IpsecError_t InspectKernelLibipsecDatapath(IpsecContext_t *pContext,
     IpsecError_t eError;
     uint32_t uiIndex;
     uint32_t uiRoute;
-    const char *pcName = pContext->acDatapathInterfaceName;
+    const char *pcName = pContext->Datapath.acInterfaceName;
     if (NULL == pCandidates) {
         return IPSEC_ERR_NO_MEMORY;
     }
     if ('\0' == pcName[0]) {
-        pcName = pContext->DatapathConfig.acKernelLibipsecTunName;
+        pcName = pContext->Datapath.Config.acKernelLibipsecTunName;
     }
     Request.ifi_family = AF_UNSPEC;
     eError = ExecuteNetlinkDump(NETLINK_ROUTE, RTM_GETLINK, &Request,
@@ -36,7 +36,7 @@ IpsecError_t InspectKernelLibipsecDatapath(IpsecContext_t *pContext,
             }
         }
         eError = SelectIpsecTun(pCandidates, pcName,
-            pContext->DatapathConfig.acProtectedInterfaceName, pStatus);
+            pContext->Datapath.Config.acProtectedInterfaceName, pStatus);
     }
     FreeIpsecRouteList(&Routes);
     free(pCandidates);
