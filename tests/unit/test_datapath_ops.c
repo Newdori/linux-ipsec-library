@@ -279,8 +279,8 @@ IpsecError_t ReceiveIpsecProtectedApplicationPacket(
     IpsecProtectedApplicationState_t *pState,
     IpsecProtectedPacket_t *pPacket, uint32_t uiTimeoutMs)
 {
-    uint32_t uiLocalAddress = pState->uiLocalAddress;
-    uint32_t uiRemoteAddress = pState->uiRemoteAddress;
+    uint32_t uiLocalAddress = 0U;
+    uint32_t uiRemoteAddress = 0U;
     uint32_t uiIndex;
 
     (void)uiTimeoutMs;
@@ -299,18 +299,16 @@ IpsecError_t ReceiveIpsecProtectedApplicationPacket(
     pPacket->pucData[8] = 64U;
     pPacket->pucData[9] = 50U;
     pPacket->pucData[23] = 1U;
-    if (0U == uiRemoteAddress) {
-        for (uiIndex = 0U;
-             uiIndex < IPSEC_PROTECTED_APPLICATION_PEER_CAPACITY;
-             uiIndex++) {
-            if (pState->aPeers[uiIndex].bInUse) {
-                uiLocalAddress = pState->aPeers[uiIndex].uiLocalAddress;
-                uiRemoteAddress = pState->aPeers[uiIndex].uiRemoteAddress;
-                break;
-            }
-            else {
-                /* Find the first registered dynamic peer. */
-            }
+    for (uiIndex = 0U;
+         uiIndex < IPSEC_PROTECTED_APPLICATION_PEER_CAPACITY;
+         uiIndex++) {
+        if (pState->aPeers[uiIndex].bInUse) {
+            uiLocalAddress = pState->aPeers[uiIndex].uiLocalAddress;
+            uiRemoteAddress = pState->aPeers[uiIndex].uiRemoteAddress;
+            break;
+        }
+        else {
+            /* Find the first registered peer. */
         }
     }
     memcpy(pPacket->pucData + 12U, &uiLocalAddress, 4U);
@@ -389,14 +387,15 @@ static IpsecDatapathConfig_t CreateTestConfig(
     Config.usPlainQueueNumber = 32002U;
     memcpy(Config.acProtectedInterfaceName, "path-test", 10U);
     memcpy(Config.acProtectedEgressInterfaceName, "eth-test", 9U);
-    memcpy(Config.acProtectedLocalAddress, "192.0.2.1", 10U);
-    memcpy(Config.acProtectedRemoteAddress, "192.0.2.2", 10U);
     return Config;
 }
 
 static void VerifyCombination(IpsecDatapathPreference_t ePreference,
     IpsecPacketPathMode_t eProtected, IpsecPacketPathMode_t ePlain)
 {
+    const char *apcLocal[] = {"192.0.2.1"};
+    const char *apcRemote[] = {"192.0.2.2"};
+    IpsecConnectionConfig_t Connection = {0};
     IpsecContext_t Context = {0};
     IpsecDatapathConfig_t Config = CreateTestConfig(ePreference, eProtected, ePlain);
     IpsecDatapathStatusEx_t Status = {.uiStructSize = sizeof(Status)};
@@ -411,9 +410,24 @@ static void VerifyCombination(IpsecDatapathPreference_t ePreference,
     uint32_t uiEndpointBefore = guiEndpointCleanup;
     uint32_t uiPlainBefore = guiPlainCleanup;
     bool bLib = IPSEC_DATAPATH_PREFER_KERNEL_LIBIPSEC == ePreference;
+    bool bPeerAdded = false;
+
+    Connection.pcName = "vpn-combination";
+    Connection.LocalAddresses.ppcItems = apcLocal;
+    Connection.LocalAddresses.uiCount = 1U;
+    Connection.RemoteAddresses.ppcItems = apcRemote;
+    Connection.RemoteAddresses.uiCount = 1U;
     CHECK(IPSEC_OK == ConfigureIpsecDatapath(&Context, &Config));
     CHECK(IPSEC_OK == InitializeIpsecDatapath(&Context));
     CHECK(IPSEC_OK == InitializeIpsecProtectedPath(&Context));
+    if (IPSEC_PACKET_PATH_APPLICATION == eProtected) {
+        CHECK(IPSEC_OK == RegisterIpsecProtectedPeerInternal(
+            &Context, &Connection, &bPeerAdded));
+        CHECK(bPeerAdded);
+    }
+    else {
+        /* SYSTEM path has no application-owned peer filter. */
+    }
     CHECK(IPSEC_OK == InitializeIpsecPlainPath(&Context));
     CHECK(IPSEC_OK == GetIpsecDatapathStatusEx(&Context, &Status));
     CHECK(Status.bBackendReady && Status.bProtectedPathReady &&
@@ -460,6 +474,13 @@ static void VerifyCombination(IpsecDatapathPreference_t ePreference,
     }
     DeinitializeIpsecPlainPath(&Context);
     DeinitializeIpsecPlainPath(&Context);
+    if (IPSEC_PACKET_PATH_APPLICATION == eProtected) {
+        CHECK(IPSEC_OK == UnregisterIpsecProtectedPeerInternal(
+            &Context, Connection.pcName));
+    }
+    else {
+        /* SYSTEM path has no application-owned peer filter. */
+    }
     DeinitializeIpsecProtectedPath(&Context);
     DeinitializeIpsecProtectedPath(&Context);
     DeinitializeIpsecDatapath(&Context);
@@ -472,11 +493,21 @@ static void VerifyCombination(IpsecDatapathPreference_t ePreference,
 
 static void VerifyFailures(void)
 {
+    const char *apcLocal[] = {"192.0.2.1"};
+    const char *apcRemote[] = {"192.0.2.2"};
+    IpsecConnectionConfig_t Connection = {0};
     IpsecContext_t Context = {0};
     IpsecDatapathConfig_t Config = CreateTestConfig(
         IPSEC_DATAPATH_PREFER_AUTO, IPSEC_PACKET_PATH_APPLICATION,
         IPSEC_PACKET_PATH_APPLICATION);
     uint32_t uiBefore;
+    bool bPeerAdded = false;
+
+    Connection.pcName = "vpn-failure";
+    Connection.LocalAddresses.ppcItems = apcLocal;
+    Connection.LocalAddresses.uiCount = 1U;
+    Connection.RemoteAddresses.ppcItems = apcRemote;
+    Connection.RemoteAddresses.uiCount = 1U;
     CHECK(IPSEC_OK == ConfigureIpsecDatapath(&Context, &Config));
     geLibProbe = IPSEC_ERR_INTERFACE_NOT_FOUND;
     CHECK(IPSEC_OK == InitializeIpsecDatapath(&Context));
@@ -500,8 +531,11 @@ static void VerifyFailures(void)
     CHECK(guiEndpointCleanup == uiBefore + 1U);
     geEndpointCreate = IPSEC_OK;
     geFilterInstall = IPSEC_ERR_RESOURCE_CONFLICT;
-    CHECK(IPSEC_ERR_RESOURCE_CONFLICT == InitializeIpsecProtectedPath(&Context));
-    CHECK(NULL == Context.ProtectedPath.pApplicationState);
+    CHECK(IPSEC_OK == InitializeIpsecProtectedPath(&Context));
+    CHECK(IPSEC_ERR_RESOURCE_CONFLICT == RegisterIpsecProtectedPeerInternal(
+        &Context, &Connection, &bPeerAdded));
+    CHECK(!bPeerAdded);
+    DeinitializeIpsecProtectedPath(&Context);
     geFilterInstall = IPSEC_OK;
     CHECK(IPSEC_OK == InitializeIpsecProtectedPath(&Context));
     gePlainOpen = IPSEC_ERR_RESOURCE_CONFLICT;
@@ -564,8 +598,6 @@ static void VerifyDynamicProtectedPeers(void)
     IpsecProtectedPacket_t Packet = {.uiStructSize = sizeof(Packet),
         .pucData = aucPacket, .zCapacity = sizeof(aucPacket)};
 
-    Config.acProtectedLocalAddress[0] = '\0';
-    Config.acProtectedRemoteAddress[0] = '\0';
     Connection.pcName = "vpn";
     Connection.LocalAddresses.ppcItems = apcLocal;
     Connection.LocalAddresses.uiCount = 1U;

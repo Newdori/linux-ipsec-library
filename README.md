@@ -248,9 +248,9 @@ acProtectedEgressInterfaceName
 usProtectedFilterPriority
 ```
 
-Leave `acProtectedLocalAddress` and `acProtectedRemoteAddress` empty for normal
-per-connection scope. Supplying both preserves the legacy single-peer fixed
-scope and rejects a connection whose outer pair differs.
+Protected APPLICATION always derives each filter scope from the outer local and
+remote addresses of the loaded connection. There is no separate fixed-address
+override.
 
 Plain APPLICATION additionally requires:
 
@@ -333,10 +333,6 @@ kernel_libipsec_tun=
 protected_interface=ipsec-path
 protected_egress_interface=eth0
 protected_filter_priority=32000
-
-# Optional legacy fixed scope; omit both for peer/connection-derived filters
-# protected_local_ip=192.0.2.1
-# protected_remote_ip=192.0.2.2
 
 # Plain APPLICATION only
 plain_queue_number=32002

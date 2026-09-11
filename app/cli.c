@@ -2524,8 +2524,8 @@ int32_t RunNativeAppCli(
             return 2;
         }
         if (IPSEC_PACKET_PATH_APPLICATION == Session.Config.Datapath.eProtectedPacketPath) {
-            (void)fprintf(stderr, "EXPERIMENTAL Protected APPLICATION: dedicated egress and "
-                          "fixed IPv4 RAW ESP pair only. "
+            (void)fprintf(stderr, "EXPERIMENTAL Protected APPLICATION: dedicated egress with "
+                          "per-connection IPv4 RAW ESP filters. "
                           "No automatic forwarding; stop traffic and SAs before closing.\n");
         }
         if (IPSEC_PACKET_PATH_APPLICATION ==
