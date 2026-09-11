@@ -157,7 +157,7 @@ static bool ContainsConnectionPfsToken(const IpsecStringListView_t *pList)
     return bFound;
 }
 
-static IpsecError_t ValidateConnectionConfig(
+IpsecError_t ValidateViciConnectionConfigInternal(
     const IpsecConnectionConfig_t *pConfig)
 {
     size_t zLocalIdLength;
@@ -575,53 +575,25 @@ static IpsecError_t BuildConnectionMessage(
     return eError;
 }
 
-IpsecError_t AddIpsecConnection(
+IpsecError_t LoadViciConnectionInternal(
     IpsecContext_t *pContext,
     const IpsecConnectionConfig_t *pConfig)
 {
     ViciBuffer_t Message = {0};
     ViciCommandResult_t Result = {0};
     IpsecError_t eError;
-    bool bProtectedPeerAdded = false;
-    bool bPlainPeerAdded = false;
 
     if (NULL == pContext) {
         eError = IPSEC_ERR_INVALID_ARGUMENT;
     }
     else {
-        eError = ValidateConnectionConfig(pConfig);
-    }
-    if ((IPSEC_OK == eError) &&
-        (IPSEC_PACKET_PATH_APPLICATION == pContext->DatapathConfig.eProtectedPacketPath)) {
-        /* Protected APPLICATION currently supports one literal outer IPv4
-         * address per side. Each accepted connection owns a scoped filter pair.
-         * NAT detection may still select UDP ESP; the output guard drops it.
-         */
-        if (pConfig->bForceUdpEncapsulation || pConfig->bEnableMobike ||
-            (1U != pConfig->LocalAddresses.uiCount) ||
-            (1U != pConfig->RemoteAddresses.uiCount)) {
-            eError = IPSEC_ERR_NOT_SUPPORTED;
-        }
+        eError = ValidateViciConnectionConfigInternal(pConfig);
     }
     if (IPSEC_OK == eError) {
         eError = BuildConnectionMessage(pConfig, &Message);
     }
     else {
         /* Preserve validation error. */
-    }
-    if (IPSEC_OK == eError) {
-        eError = RegisterIpsecProtectedPeerInternal(
-            pContext, pConfig, &bProtectedPeerAdded);
-    }
-    else {
-        /* Preserve message error. */
-    }
-    if (IPSEC_OK == eError) {
-        eError = RegisterIpsecPlainPeerInternal(
-            pContext, pConfig, &bPlainPeerAdded);
-    }
-    else {
-        /* Preserve protected-path registration error. */
     }
     if (IPSEC_OK == eError) {
         eError = ExecuteViciCommand(pContext, "load-conn", &Message, NULL,
@@ -631,36 +603,10 @@ IpsecError_t AddIpsecConnection(
         /* Preserve message error. */
     }
     DestroyViciBuffer(&Message);
-    if ((IPSEC_OK != eError) && bPlainPeerAdded) {
-        IpsecError_t eCleanupError = UnregisterIpsecPlainPeerInternal(
-            pContext, pConfig->pcName);
-
-        if (IPSEC_OK != eCleanupError) {
-            LogIpsec(pContext, IPSEC_LOG_WARNING,
-                "plain APPLICATION rollback failed for %s: %s",
-                pConfig->pcName, GetIpsecErrorString(eCleanupError));
-        }
-    }
-    if ((IPSEC_OK != eError) && bProtectedPeerAdded) {
-        IpsecError_t eCleanupError = UnregisterIpsecProtectedPeerInternal(
-            pContext, pConfig->pcName);
-
-        if (IPSEC_OK != eCleanupError) {
-            LogIpsec(pContext, IPSEC_LOG_WARNING,
-                "protected APPLICATION rollback failed for %s: %s",
-                pConfig->pcName, GetIpsecErrorString(eCleanupError));
-        }
-        else {
-            /* Preserve the original connection-load error. */
-        }
-    }
-    else {
-        /* Loaded connections retain their protected peer scope. */
-    }
     return eError;
 }
 
-IpsecError_t RemoveIpsecConnection(
+IpsecError_t UnloadViciConnectionInternal(
     IpsecContext_t *pContext,
     const char *pcName)
 {
@@ -707,10 +653,10 @@ IpsecError_t RemoveIpsecConnection(
             else if (IPSEC_OK != eQuery) {
                 eError = eQuery; /* Absence is unconfirmed; retain local filters. */
             }
-            else if (bSavedDiagnostic && (0 == pthread_mutex_lock(&pContext->CommandMutex))) {
+            else if (bSavedDiagnostic && (0 == pthread_mutex_lock(&pContext->Command.Mutex))) {
                 /* A successful existence query must not hide the unload failure. */
-                pContext->LastDiagnostic = UnloadDiagnostic;
-                (void)pthread_mutex_unlock(&pContext->CommandMutex);
+                pContext->Diagnostic.Last = UnloadDiagnostic;
+                (void)pthread_mutex_unlock(&pContext->Command.Mutex);
             }
         }
     }
@@ -718,17 +664,6 @@ IpsecError_t RemoveIpsecConnection(
         /* Preserve message error. */
     }
     DestroyViciBuffer(&Message);
-    if (IPSEC_OK == eError) {
-        IpsecError_t ePlainError =
-            UnregisterIpsecPlainPeerInternal(pContext, pcName);
-        IpsecError_t eProtectedError =
-            UnregisterIpsecProtectedPeerInternal(pContext, pcName);
-
-        eError = (IPSEC_OK != ePlainError) ? ePlainError : eProtectedError;
-    }
-    else {
-        /* Keep the filter while unload completion is uncertain. */
-    }
     return eError;
 }
 

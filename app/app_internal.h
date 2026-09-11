@@ -44,7 +44,6 @@
 typedef struct NativeAppStartupOptions {
     const char *pcConfigPath;
     const char *pcApplicationConfigPath;
-    const char *pcManagementConfigPath;
     const char *pcGeneratePskPath;
     int32_t iCommandIndex;
     bool bVerbose;
@@ -527,9 +526,8 @@ IpsecError_t LoadNativeAppConfig(
     char *pcError,
     uint32_t uiErrorLength);
 
-IpsecError_t LoadNativeAppConfigFiles(
+IpsecError_t LoadNativeAppApplicationConfig(
     const char *pcApplicationPath,
-    const char *pcManagementPath,
     NativeAppConfig_t *pConfig,
     char *pcError,
     uint32_t uiErrorLength);

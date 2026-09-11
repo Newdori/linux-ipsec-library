@@ -339,6 +339,14 @@ typedef struct IpsecDatapathStatusEx {
     uint16_t usPlainQueueNumber;
 } IpsecDatapathStatusEx_t;
 
+typedef struct IpsecRuntimeStatus {
+    uint32_t uiStructSize;
+    bool bDaemonReady;
+    bool bDatapathReady;
+    IpsecDaemonStatus_t Daemon;
+    IpsecDatapathStatusEx_t Datapath;
+} IpsecRuntimeStatus_t;
+
 typedef struct IpsecPacketPathStatus {
     uint32_t uiStructSize;
     IpsecPacketPathMode_t eProtectedPacketPath;

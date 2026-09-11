@@ -16,37 +16,74 @@
 #define IPSEC_VICI_SOCKET_PATH_LENGTH 108U
 #define IPSEC_LOG_MESSAGE_LENGTH 1024U
 
-struct IpsecContext {
-    int32_t iViciSocket;
-    char acViciSocketPath[IPSEC_VICI_SOCKET_PATH_LENGTH];
+typedef struct IpsecViciState {
+    int32_t iSocket;
+    char acSocketPath[IPSEC_VICI_SOCKET_PATH_LENGTH];
     uint32_t uiConnectTimeoutMs;
     uint32_t uiCommandTimeoutMs;
     uint64_t ullCommandDeadlineMs;
-    pthread_mutex_t CommandMutex;
-    bool bCommandMutexInitialized;
-    pthread_cond_t CommandCondition;
-    bool bCommandConditionInitialized;
-    bool bCommandActive;
+    int32_t iTransportCancelFd;
+} IpsecViciState_t;
+
+typedef struct IpsecCommandState {
+    pthread_mutex_t Mutex;
+    bool bMutexInitialized;
+    pthread_cond_t Condition;
+    bool bConditionInitialized;
+    bool bActive;
     bool bClosing;
     struct ViciWaiter *pWaiters;
-    int32_t iTransportCancelFd;
-    IpsecDiagnostic_t LastDiagnostic;
-    IpsecLogCallback_t pLogCallback;
-    void *pvLogUserData;
-    IpsecDatapathConfig_t DatapathConfig;
-    IpsecDatapathType_t eActiveDatapath;
-    const struct IpsecDatapathOps *pDatapathOps;
-    const struct IpsecProtectedPathOps *pProtectedPathOps;
-    const struct IpsecPlainPathOps *pPlainPathOps;
-    IpsecError_t eDatapathError;
-    bool bDatapathInitialized;
-    bool bProtectedPathInitialized;
-    bool bPlainPathInitialized;
-    char acDatapathInterfaceName[IPSEC_DATAPATH_NAME_LENGTH];
-    uint32_t uiDatapathInterfaceIndex;
-    /* Packet path implementations own these opaque allocations. */
-    struct IpsecProtectedApplicationState *pProtectedApplicationState;
-    struct IpsecPlainApplicationState *pPlainApplicationState;
+} IpsecCommandState_t;
+
+typedef struct IpsecDiagnosticState {
+    IpsecDiagnostic_t Last;
+} IpsecDiagnosticState_t;
+
+typedef struct IpsecLoggerState {
+    IpsecLogCallback_t pCallback;
+    void *pvUserData;
+} IpsecLoggerState_t;
+
+typedef struct IpsecDatapathManager {
+    IpsecDatapathConfig_t Config;
+    IpsecDatapathType_t eActiveType;
+    const struct IpsecDatapathOps *pOps;
+    IpsecError_t eError;
+    bool bInitialized;
+    char acInterfaceName[IPSEC_DATAPATH_NAME_LENGTH];
+    uint32_t uiInterfaceIndex;
+} IpsecDatapathManager_t;
+
+typedef struct IpsecProtectedPathManager {
+    const struct IpsecProtectedPathOps *pOps;
+    bool bInitialized;
+    struct IpsecProtectedApplicationState *pApplicationState;
+} IpsecProtectedPathManager_t;
+
+typedef struct IpsecPlainPathManager {
+    const struct IpsecPlainPathOps *pOps;
+    bool bInitialized;
+    struct IpsecPlainApplicationState *pApplicationState;
+} IpsecPlainPathManager_t;
+
+typedef struct IpsecOwnedCredential IpsecOwnedCredential_t;
+
+typedef struct IpsecCredentialState {
+    pthread_mutex_t Mutex;
+    bool bMutexInitialized;
+    bool bAnonymousLoaded;
+    IpsecOwnedCredential_t *pOwned;
+} IpsecCredentialState_t;
+
+struct IpsecContext {
+    IpsecViciState_t Vici;
+    IpsecCommandState_t Command;
+    IpsecDiagnosticState_t Diagnostic;
+    IpsecLoggerState_t Logger;
+    IpsecDatapathManager_t Datapath;
+    IpsecProtectedPathManager_t ProtectedPath;
+    IpsecPlainPathManager_t PlainPath;
+    IpsecCredentialState_t Credentials;
 };
 
 void DestroyIpsecContextState(IpsecContext_t *pContext);
@@ -54,6 +91,10 @@ void DestroyIpsecContextState(IpsecContext_t *pContext);
 IpsecError_t InitializeIpsecContextState(
     IpsecContext_t *pContext,
     const IpsecConfig_t *pConfig);
+
+IpsecError_t InitializeIpsecCredentialState(IpsecContext_t *pContext);
+
+void DestroyIpsecCredentialState(IpsecContext_t *pContext);
 
 void LogIpsec(
     const IpsecContext_t *pContext,

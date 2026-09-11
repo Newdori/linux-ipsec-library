@@ -21,6 +21,17 @@ The library does not implement IKEv2 or ESP cryptography. IKEv2 remains in
 `charon`; ESP processing remains in the selected XFRM or kernel-libipsec
 backend.
 
+### Future KCMVP boundary
+
+KCMVP operation integration is intentionally outside `libipsecctrl`. The
+control library may later expose provider policy, capability, and health, but
+the adapter that invokes a vendor cryptographic module must run at the actual
+IKE/ESP operation boundary in a separately built charon plugin/provider. This
+keeps vendor keys, vendor entry points, and strongSwan headers out of this
+library and prevents a control API from being mistaken for a cryptographic
+implementation. The empty implementation placeholders were removed; only the
+uncompiled internal boundary declaration remains until that ABI is designed.
+
 ## Architecture
 
 ```text
@@ -276,6 +287,21 @@ if (IPSEC_OK == eError) {
 }
 ```
 
+`InitializeIpsecControl()` requires only the VICI control plane; it still
+initializes the default datapath when available and leaves a probe failure
+available through status APIs. `InitializeIpsec()` is a compatibility alias for
+that behavior. Product packet paths should use
+`InitializeIpsecWithDatapath()`, which fails initialization if the requested
+backend or packet path is not ready. `GetIpsecRuntimeStatus()` returns daemon
+and datapath readiness together so callers do not infer data-plane readiness
+from a successful VICI connection.
+
+PSKs loaded with an explicit ID are tracked by context.
+`ClearIpsecContextCredentials()` unloads only those tracked IDs. Anonymous VICI
+credentials cannot be isolated and therefore return `IPSEC_ERR_NOT_SUPPORTED`.
+`ClearAllIpsecDaemonCredentials()` is an explicit daemon-wide operator action;
+the legacy `ClearIpsecCredentials()` name remains as its compatibility alias.
+
 VICI, context, connection, credential, SA, wait, logger, ownership, and
 diagnostic contracts remain in the public headers. `charon` must already be
 running and expose VICI. The library never starts or stops it.
@@ -295,8 +321,7 @@ example as that `.conf` file first. `--app-config` and `--verbose` remain
 compatibility aliases; `--config` retains the legacy combined-config behavior.
 
 Role-specific example files are under `app/config/`. Each file contains both
-application defaults and the current algorithm policy. The optional
-`management.conf` input remains a legacy override. New packet-path keys are:
+application defaults and the current algorithm policy. New packet-path keys are:
 
 ```text
 datapath_backend=auto

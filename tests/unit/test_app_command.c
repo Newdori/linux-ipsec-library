@@ -79,7 +79,6 @@ static bool VerifyStartupOptionParsing(void)
     char *pacReversed[] = {"ipsec_app", "-v", "-c", "/tmp/config with spaces.conf", "show", "daemon"};
     char *pacConfigOnly[] = {"ipsec_app", "-c", "responder.conf"};
     char *pacLegacy[] = {"ipsec_app", "--config", "legacy.conf", "-v"};
-    char *pacOverride[] = {"ipsec_app", "-c", "initiator.conf", "--management-config", "management.conf"};
     char *pacGenerate[] = {"ipsec_app", "--generate-psk", "secret.psk"};
     char *pacHelp[] = {"ipsec_app", "-h"};
     NativeAppStartupOptions_t Short, Long, Options;
@@ -108,10 +107,6 @@ static bool VerifyStartupOptionParsing(void)
         (0 != strcmp("legacy.conf", Options.pcConfigPath))) {
         return false;
     }
-    if (!ParseNativeAppStartupOptions(5, pacOverride, &Options) ||
-        (0 != strcmp("management.conf", Options.pcManagementConfigPath))) {
-        return false;
-    }
     if (!ParseNativeAppStartupOptions(3, pacGenerate, &Options) ||
         (0 != strcmp("secret.psk", Options.pcGeneratePskPath))) {
         return false;
@@ -126,12 +121,15 @@ static bool VerifyInvalidStartupOptions(void)
     char *pacNull[] = {"ipsec_app", "-c", NULL};
     char *pacEmpty[] = {"ipsec_app", "-c", ""};
     char *pacUnknown[] = {"ipsec_app", "--unknown"};
+    char *pacRemoved[] = {"ipsec_app", "-c", "initiator.conf",
+                          "--management-config", "management.conf"};
     NativeAppStartupOptions_t Options;
     return !ParseNativeAppStartupOptions(2, pacMissing, &Options) &&
         !ParseNativeAppStartupOptions(3, pacNextOption, &Options) &&
         !ParseNativeAppStartupOptions(3, pacNull, &Options) &&
         !ParseNativeAppStartupOptions(3, pacEmpty, &Options) &&
         !ParseNativeAppStartupOptions(2, pacUnknown, &Options) &&
+        !ParseNativeAppStartupOptions(5, pacRemoved, &Options) &&
         !ParseNativeAppStartupOptions(0, pacMissing, &Options) &&
         !ParseNativeAppStartupOptions(2, NULL, &Options) &&
         !ParseNativeAppStartupOptions(2, pacMissing, NULL);

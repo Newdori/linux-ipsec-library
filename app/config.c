@@ -503,21 +503,6 @@ static IpsecError_t SetNativeAppApplicationSetting(
     }
 }
 
-static IpsecError_t SetNativeAppManagementSetting(
-    NativeAppConfig_t *pConfig,
-    const char *pcKey,
-    const char *pcValue)
-{
-    if ((0 != strcmp("ike_proposals", pcKey)) &&
-        (0 != strcmp("esp_proposals", pcKey)) &&
-        (0 != strcmp("ipsec_mode", pcKey))) {
-        return IPSEC_ERR_INVALID_ARGUMENT;
-    }
-    else {
-        return SetNativeAppConfigSetting(pConfig, pcKey, pcValue);
-    }
-}
-
 static IpsecError_t LoadNativeAppSettingsFile(
     const char *pcPath,
     NativeAppConfig_t *pConfig,
@@ -642,7 +627,7 @@ IpsecError_t ValidateNativeAppBaseConfig(
         pcInvalid = "command_timeout_sec";
     }
     else {
-        /* The application and management settings are complete. */
+        /* The application settings are complete. */
     }
 
     if (NULL != pcInvalid) {
@@ -655,9 +640,8 @@ IpsecError_t ValidateNativeAppBaseConfig(
     }
 }
 
-IpsecError_t LoadNativeAppConfigFiles(
+IpsecError_t LoadNativeAppApplicationConfig(
     const char *pcApplicationPath,
-    const char *pcManagementPath,
     NativeAppConfig_t *pConfig,
     char *pcError,
     uint32_t uiErrorLength)
@@ -673,20 +657,6 @@ IpsecError_t LoadNativeAppConfigFiles(
     eError = LoadNativeAppSettingsFile(
         pcApplicationPath, pConfig, SetNativeAppApplicationSetting,
         pcError, uiErrorLength);
-    if ((IPSEC_OK == eError) && (NULL != pcManagementPath)) {
-        pConfig->acIkeProposals[0] = '\0';
-        pConfig->acEspProposals[0] = '\0';
-        pConfig->eMode = (IpsecMode_t)-1;
-        eError = LoadNativeAppSettingsFile(
-            pcManagementPath, pConfig, SetNativeAppManagementSetting,
-            pcError, uiErrorLength);
-    }
-    else if (IPSEC_OK == eError) {
-        /* The single application file also carries management policy. */
-    }
-    else {
-        /* Preserve the application configuration error. */
-    }
     if (IPSEC_OK == eError) {
         eError = SetNativeAppDefaultTrafficSelector(
             pConfig->acLocalAddress, pConfig->acLocalTrafficSelector,
@@ -700,7 +670,7 @@ IpsecError_t LoadNativeAppConfigFiles(
                                              uiErrorLength);
     }
     else {
-        /* Preserve the management configuration error. */
+        /* Preserve the application configuration error. */
     }
     return eError;
 }

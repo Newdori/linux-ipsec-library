@@ -16,8 +16,8 @@ IpsecError_t GetIpsecPacketPathStatus(IpsecContext_t *pContext,
     memset(pStatus, 0, sizeof(*pStatus));
     pStatus->uiStructSize = sizeof(*pStatus);
     pStatus->eProtectedPacketPath =
-        pContext->DatapathConfig.eProtectedPacketPath;
-    pStatus->ePlainPacketPath = pContext->DatapathConfig.ePlainPacketPath;
+        pContext->Datapath.Config.eProtectedPacketPath;
+    pStatus->ePlainPacketPath = pContext->Datapath.Config.ePlainPacketPath;
     eError = GetIpsecProtectedPathStatusInternal(pContext, &Protected);
     if (IPSEC_OK == eError) {
         pStatus->bProtectedPathReady = Protected.bReady;

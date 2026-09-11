@@ -244,15 +244,15 @@ static IpsecError_t AcquireViciCommand(
 
     Deadline.tv_sec = (time_t)(ullDeadlineMs / 1000U);
     Deadline.tv_nsec = (int64_t)((ullDeadlineMs % 1000U) * 1000000U);
-    if (0 != pthread_mutex_lock(&pContext->CommandMutex)) {
+    if (0 != pthread_mutex_lock(&pContext->Command.Mutex)) {
         return IPSEC_ERR_INTERNAL;
     }
-    while (pContext->bCommandActive && !pContext->bClosing &&
+    while (pContext->Command.bActive && !pContext->Command.bClosing &&
            !IsViciWaitCancelled(iCancelFd) && (0 == iResult)) {
-        iResult = pthread_cond_timedwait(&pContext->CommandCondition,
-                                        &pContext->CommandMutex, &Deadline);
+        iResult = pthread_cond_timedwait(&pContext->Command.Condition,
+                                        &pContext->Command.Mutex, &Deadline);
     }
-    if (pContext->bClosing || IsViciWaitCancelled(iCancelFd)) {
+    if (pContext->Command.bClosing || IsViciWaitCancelled(iCancelFd)) {
         eError = IPSEC_ERR_CANCELLED;
     }
     else if ((ETIMEDOUT == iResult) ||
@@ -263,9 +263,9 @@ static IpsecError_t AcquireViciCommand(
         eError = IPSEC_ERR_INTERNAL;
     }
     else {
-        pContext->bCommandActive = true;
+        pContext->Command.bActive = true;
     }
-    (void)pthread_mutex_unlock(&pContext->CommandMutex);
+    (void)pthread_mutex_unlock(&pContext->Command.Mutex);
     return eError;
 }
 
@@ -307,18 +307,18 @@ IpsecError_t ExecuteViciCommandUntil(
     bSensitive = (NULL != pRequest) && pRequest->bSensitive;
     ullNowMs = GetIpsecMonotonicMilliseconds();
     if ((0U == ullNowMs) ||
-        (ullNowMs > (UINT64_MAX - pContext->uiCommandTimeoutMs))) {
+        (ullNowMs > (UINT64_MAX - pContext->Vici.uiCommandTimeoutMs))) {
         return IPSEC_ERR_INTERNAL;
     }
-    ullCommandLimit = ullNowMs + pContext->uiCommandTimeoutMs;
+    ullCommandLimit = ullNowMs + pContext->Vici.uiCommandTimeoutMs;
     if ((0U == ullDeadlineMs) || (ullDeadlineMs > ullCommandLimit)) {
         ullDeadlineMs = ullCommandLimit;
     }
     eError = AcquireViciCommand(pContext, ullDeadlineMs, iCancelFd);
     if (IPSEC_OK == eError) {
         bAcquired = true;
-        pContext->ullCommandDeadlineMs = ullDeadlineMs;
-        pContext->iTransportCancelFd = iCancelFd;
+        pContext->Vici.ullCommandDeadlineMs = ullDeadlineMs;
+        pContext->Vici.iTransportCancelFd = iCancelFd;
         Diagnostic.eStage = IPSEC_STAGE_CONNECT;
         errno = 0;
         eError = ConnectViciTransport(pContext);
@@ -396,16 +396,16 @@ IpsecError_t ExecuteViciCommandUntil(
     }
     DestroyViciBuffer(&Packet);
     if (bAcquired) {
-        pContext->ullCommandDeadlineMs = 0U;
-        pContext->iTransportCancelFd = -1;
+        pContext->Vici.ullCommandDeadlineMs = 0U;
+        pContext->Vici.iTransportCancelFd = -1;
     }
-    (void)pthread_mutex_lock(&pContext->CommandMutex);
-    pContext->LastDiagnostic = Diagnostic;
+    (void)pthread_mutex_lock(&pContext->Command.Mutex);
+    pContext->Diagnostic.Last = Diagnostic;
     if (bAcquired) {
-        pContext->bCommandActive = false;
-        (void)pthread_cond_broadcast(&pContext->CommandCondition);
+        pContext->Command.bActive = false;
+        (void)pthread_cond_broadcast(&pContext->Command.Condition);
     }
-    (void)pthread_mutex_unlock(&pContext->CommandMutex);
+    (void)pthread_mutex_unlock(&pContext->Command.Mutex);
 
     if (IPSEC_ERR_VICI_COMMAND == eError) {
         LogIpsec(pContext, IPSEC_LOG_ERROR, "VICI command %s failed: %s",

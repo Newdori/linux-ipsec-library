@@ -35,15 +35,15 @@ static void BuildProtectedApplicationFilterState(
 
 static IpsecError_t InitializeApplicationProtectedPath(IpsecContext_t *pContext)
 {
-    const IpsecDatapathConfig_t *pConfig = &pContext->DatapathConfig;
+    const IpsecDatapathConfig_t *pConfig = &pContext->Datapath.Config;
     IpsecProtectedApplicationState_t *pState;
     IpsecError_t eError;
-    if (!pContext->bDatapathInitialized ||
+    if (!pContext->Datapath.bInitialized ||
         ('\0' == pConfig->acProtectedInterfaceName[0]) ||
         ('\0' == pConfig->acProtectedEgressInterfaceName[0]) ||
         (0 == strcmp(pConfig->acProtectedInterfaceName, pConfig->acProtectedEgressInterfaceName)) ||
-        (0 == strcmp(pConfig->acProtectedInterfaceName, pContext->acDatapathInterfaceName)) ||
-        (0 == strcmp(pConfig->acProtectedEgressInterfaceName, pContext->acDatapathInterfaceName)) ||
+        (0 == strcmp(pConfig->acProtectedInterfaceName, pContext->Datapath.acInterfaceName)) ||
+        (0 == strcmp(pConfig->acProtectedEgressInterfaceName, pContext->Datapath.acInterfaceName)) ||
         (UINT16_MAX == pConfig->usProtectedFilterPriority)) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
@@ -52,7 +52,7 @@ static IpsecError_t InitializeApplicationProtectedPath(IpsecContext_t *pContext)
         return IPSEC_ERR_NO_MEMORY;
     }
     pState->iTunFd = -1;
-    pContext->pProtectedApplicationState = pState;
+    pContext->ProtectedPath.pApplicationState = pState;
     if (0 != pthread_mutex_init(&pState->PeerMutex, NULL)) {
         return IPSEC_ERR_INTERNAL;
     }
@@ -175,7 +175,7 @@ IpsecError_t RegisterIpsecProtectedPeerInternal(
     }
     *pbAdded = false;
     if (IPSEC_PACKET_PATH_APPLICATION !=
-        pContext->DatapathConfig.eProtectedPacketPath) {
+        pContext->Datapath.Config.eProtectedPacketPath) {
         return IPSEC_OK;
     }
     eError = ParseProtectedApplicationPeer(
@@ -183,7 +183,7 @@ IpsecError_t RegisterIpsecProtectedPeerInternal(
     if (IPSEC_OK != eError) {
         return eError;
     }
-    pState = pContext->pProtectedApplicationState;
+    pState = pContext->ProtectedPath.pApplicationState;
     if ((NULL == pState) || !pState->bPeerMutexInitialized) {
         return IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
     }
@@ -275,10 +275,10 @@ IpsecError_t UnregisterIpsecProtectedPeerInternal(
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     if (IPSEC_PACKET_PATH_APPLICATION !=
-        pContext->DatapathConfig.eProtectedPacketPath) {
+        pContext->Datapath.Config.eProtectedPacketPath) {
         return IPSEC_OK;
     }
-    pState = pContext->pProtectedApplicationState;
+    pState = pContext->ProtectedPath.pApplicationState;
     if ((NULL == pState) || !pState->bPeerMutexInitialized) {
         return IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
     }
@@ -331,7 +331,7 @@ bool MatchIpsecProtectedPeerInternal(
         (1 != inet_pton(AF_INET, pcRemoteAddress, &uiRemoteAddress))) {
         return false;
     }
-    pState = pContext->pProtectedApplicationState;
+    pState = pContext->ProtectedPath.pApplicationState;
     if ((NULL == pState) || !pState->bPeerMutexInitialized ||
         (0 != pthread_mutex_lock(&pState->PeerMutex))) {
         return false;
@@ -473,7 +473,7 @@ static IpsecError_t ReceiveApplicationProtectedPacket(IpsecContext_t *pContext,
         uint32_t uiRemaining = (ullNow < ullDeadline) ?
             (uint32_t)(ullDeadline - ullNow) : 0U;
         eError = ReceiveIpsecProtectedApplicationPacket(
-            pContext->pProtectedApplicationState, pPacket, uiRemaining);
+            pContext->ProtectedPath.pApplicationState, pPacket, uiRemaining);
         if ((IPSEC_OK != eError) ||
             !IsIpsecProtectedTunControlPacket(pPacket->pucData, pPacket->zLength)) {
             break;
@@ -493,7 +493,7 @@ static IpsecError_t ReceiveApplicationProtectedPacket(IpsecContext_t *pContext,
         pPacket->eType = IPSEC_PROTECTED_PACKET_RAW_ESP;
         pPacket->eDirection = IPSEC_PACKET_DIRECTION_OUTBOUND;
         eError = ValidateProtectedApplicationScope(
-            pContext->pProtectedApplicationState, pPacket, false);
+            pContext->ProtectedPath.pApplicationState, pPacket, false);
         if (IPSEC_OK != eError) {
             /* Header metadata only: never dump payload or keys into logs. */
             LogIpsec(pContext, IPSEC_LOG_WARNING,
@@ -536,10 +536,10 @@ static IpsecError_t SubmitApplicationProtectedPacket(IpsecContext_t *pContext,
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     eError = ValidateProtectedApplicationScope(
-        pContext->pProtectedApplicationState, pPacket, true);
+        pContext->ProtectedPath.pApplicationState, pPacket, true);
     if (IPSEC_OK == eError) {
         eError = SubmitIpsecProtectedApplicationPacket(
-            pContext->pProtectedApplicationState, pPacket);
+            pContext->ProtectedPath.pApplicationState, pPacket);
     }
     return eError;
 }
@@ -548,9 +548,9 @@ static IpsecError_t GetApplicationProtectedPathStatus(IpsecContext_t *pContext,
     IpsecProtectedPathStatusInternal_t *pStatus)
 {
     IpsecError_t eError = IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
-    if (NULL != pContext->pProtectedApplicationState) {
+    if (NULL != pContext->ProtectedPath.pApplicationState) {
         IpsecProtectedApplicationState_t *pState =
-            pContext->pProtectedApplicationState;
+            pContext->ProtectedPath.pApplicationState;
         pStatus->uiInterfaceIndex = pState->uiTunIndex;
         memcpy(pStatus->acInterfaceName, pState->acTunName, sizeof(pStatus->acInterfaceName));
         eError = InspectIpsecProtectedApplicationEndpoint(pState);
@@ -560,16 +560,16 @@ static IpsecError_t GetApplicationProtectedPathStatus(IpsecContext_t *pContext,
         else {
             /* Preserve endpoint error. */
         }
-        pStatus->bReady = pContext->bProtectedPathInitialized && (IPSEC_OK == eError);
+        pStatus->bReady = pContext->ProtectedPath.bInitialized && (IPSEC_OK == eError);
     }
     return eError;
 }
 
 static void DeinitializeApplicationProtectedPath(IpsecContext_t *pContext)
 {
-    if (NULL != pContext->pProtectedApplicationState) {
+    if (NULL != pContext->ProtectedPath.pApplicationState) {
         IpsecProtectedApplicationState_t *pState =
-            pContext->pProtectedApplicationState;
+            pContext->ProtectedPath.pApplicationState;
         uint32_t uiIndex;
 
         if (pState->bPeerMutexInitialized &&
@@ -615,7 +615,7 @@ static void DeinitializeApplicationProtectedPath(IpsecContext_t *pContext)
             /* Mutex was never initialized. */
         }
         free(pState);
-        pContext->pProtectedApplicationState = NULL;
+        pContext->ProtectedPath.pApplicationState = NULL;
     }
 }
 

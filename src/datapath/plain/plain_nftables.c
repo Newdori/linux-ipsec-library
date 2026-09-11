@@ -499,7 +499,7 @@ static IpsecError_t BuildPlainNftChainRequest(
         NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL, 0U);
     uint32_t uiHook =
         (IPSEC_PLAIN_NETFILTER_FORWARD ==
-         pContext->DatapathConfig.ePlainNetfilterHook) ?
+         pContext->Datapath.Config.ePlainNetfilterHook) ?
         NF_INET_FORWARD : NF_INET_LOCAL_IN;
     size_t zHook;
     IpsecError_t eError;
@@ -691,7 +691,7 @@ IpsecError_t InitializeIpsecPlainRules(IpsecContext_t *pContext,
     int32_t iLength;
     IpsecError_t eError = IPSEC_OK;
 
-    if (!pContext->DatapathConfig.bManagePlainNetfilterRule) {
+    if (!pContext->Datapath.Config.bManagePlainNetfilterRule) {
         return IPSEC_OK;
     }
     pState->bManageRule = true;
@@ -705,9 +705,9 @@ IpsecError_t InitializeIpsecPlainRules(IpsecContext_t *pContext,
                   (const struct sockaddr *)&Address, sizeof(Address))) {
         eError = MapPlainRuleError(errno, IPSEC_ERR_PLAIN_PATH_UNAVAILABLE);
     }
-    Timeout.tv_sec = (time_t)(pContext->uiCommandTimeoutMs / 1000U);
+    Timeout.tv_sec = (time_t)(pContext->Vici.uiCommandTimeoutMs / 1000U);
     Timeout.tv_usec = (suseconds_t)
-        ((pContext->uiCommandTimeoutMs % 1000U) * 1000U);
+        ((pContext->Vici.uiCommandTimeoutMs % 1000U) * 1000U);
     if ((IPSEC_OK == eError) &&
         ((0 != setsockopt(pState->iRuleSocket, SOL_SOCKET, SO_RCVTIMEO,
                           &Timeout, sizeof(Timeout))) ||
@@ -726,7 +726,7 @@ IpsecError_t InitializeIpsecPlainRules(IpsecContext_t *pContext,
     iLength = snprintf(pState->acRuleChainName,
         sizeof(pState->acRuleChainName), "plain_%s",
         (IPSEC_PLAIN_NETFILTER_FORWARD ==
-         pContext->DatapathConfig.ePlainNetfilterHook) ? "forward" : "input");
+         pContext->Datapath.Config.ePlainNetfilterHook) ? "forward" : "input");
     if ((IPSEC_OK == eError) &&
         ((iLength < 0) || ((size_t)iLength >=
                            sizeof(pState->acRuleChainName)))) {
@@ -786,11 +786,11 @@ IpsecError_t RegisterIpsecPlainPeerInternal(IpsecContext_t *pContext,
     }
     *pbAdded = false;
     if ((IPSEC_PACKET_PATH_APPLICATION !=
-         pContext->DatapathConfig.ePlainPacketPath) ||
-        !pContext->DatapathConfig.bManagePlainNetfilterRule) {
+         pContext->Datapath.Config.ePlainPacketPath) ||
+        !pContext->Datapath.Config.bManagePlainNetfilterRule) {
         return IPSEC_OK;
     }
-    pState = pContext->pPlainApplicationState;
+    pState = pContext->PlainPath.pApplicationState;
     if ((NULL == pState) || !pState->bPeerMutexInitialized ||
         !pState->bRuleTableOwned) {
         return IPSEC_ERR_PLAIN_PATH_UNAVAILABLE;
@@ -847,11 +847,11 @@ IpsecError_t UnregisterIpsecPlainPeerInternal(IpsecContext_t *pContext,
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     if ((IPSEC_PACKET_PATH_APPLICATION !=
-         pContext->DatapathConfig.ePlainPacketPath) ||
-        !pContext->DatapathConfig.bManagePlainNetfilterRule) {
+         pContext->Datapath.Config.ePlainPacketPath) ||
+        !pContext->Datapath.Config.bManagePlainNetfilterRule) {
         return IPSEC_OK;
     }
-    pState = pContext->pPlainApplicationState;
+    pState = pContext->PlainPath.pApplicationState;
     if ((NULL == pState) || !pState->bPeerMutexInitialized) {
         return IPSEC_ERR_PLAIN_PATH_UNAVAILABLE;
     }

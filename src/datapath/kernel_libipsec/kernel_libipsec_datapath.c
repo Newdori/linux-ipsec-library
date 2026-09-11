@@ -27,7 +27,7 @@ static IpsecError_t GetKernelLibipsecStatus(IpsecContext_t *pContext,
 {
     IpsecError_t eError = ProbeKernelLibipsec(pContext, pStatus);
     if ((IPSEC_OK == eError) &&
-        (pContext->uiDatapathInterfaceIndex != pStatus->uiTunInterfaceIndex)) {
+        (pContext->Datapath.uiInterfaceIndex != pStatus->uiTunInterfaceIndex)) {
         pStatus->bReady = false;
         eError = IPSEC_ERR_DATAPATH_UNAVAILABLE;
     }

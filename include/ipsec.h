@@ -28,6 +28,15 @@ typedef struct IpsecContext IpsecContext_t;
 IpsecError_t GenerateIpsecPskFile(
     const char *pcPath);
 
+/* Control-compatible initialization. The default datapath is initialized when
+ * available, but datapath probe errors remain queryable and do not fail this
+ * call. Use InitializeIpsecWithDatapath for required product packet paths.
+ */
+IpsecError_t InitializeIpsecControl(
+    IpsecContext_t **ppContext,
+    const IpsecConfig_t *pConfig);
+
+/* Compatibility alias for InitializeIpsecControl(). */
 IpsecError_t InitializeIpsec(
     IpsecContext_t **ppContext,
     const IpsecConfig_t *pConfig);
@@ -44,6 +53,8 @@ IpsecError_t InitializeIpsecWithDatapath(
 
 IpsecError_t GetIpsecDatapathStatusEx(
     IpsecContext_t *pContext, IpsecDatapathStatusEx_t *pStatus);
+IpsecError_t GetIpsecRuntimeStatus(
+    IpsecContext_t *pContext, IpsecRuntimeStatus_t *pStatus);
 IpsecError_t GetIpsecTrafficStatistics(
     IpsecContext_t *pContext, IpsecTrafficStatistics_t *pStatistics);
 IpsecError_t GetIpsecPacketPathStatus(
@@ -114,7 +125,17 @@ IpsecError_t RemoveIpsecPsk(
     IpsecContext_t *pContext,
     const char *pcCredentialId);
 
-/* Removes every credential loaded through VICI, not only one context owner. */
+/* Removes credentials with explicit IDs successfully loaded by this context.
+ * Anonymous credentials cannot be isolated and return NOT_SUPPORTED.
+ */
+IpsecError_t ClearIpsecContextCredentials(
+    IpsecContext_t *pContext);
+
+/* Daemon-wide destructive operation. Other contexts are not isolated. */
+IpsecError_t ClearAllIpsecDaemonCredentials(
+    IpsecContext_t *pContext);
+
+/* Compatibility alias for ClearAllIpsecDaemonCredentials(). */
 IpsecError_t ClearIpsecCredentials(
     IpsecContext_t *pContext);
 

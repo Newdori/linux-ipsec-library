@@ -26,7 +26,7 @@ static IpsecError_t SubmitSystemProtectedPacket(IpsecContext_t *pContext,
 static IpsecError_t GetSystemProtectedPathStatus(IpsecContext_t *pContext,
     IpsecProtectedPathStatusInternal_t *pStatus)
 {
-    pStatus->bReady = pContext->bProtectedPathInitialized;
+    pStatus->bReady = pContext->ProtectedPath.bInitialized;
     return IPSEC_OK;
 }
 

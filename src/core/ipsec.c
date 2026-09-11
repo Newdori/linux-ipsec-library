@@ -38,8 +38,8 @@ static IpsecError_t ConnectDefaultIpsecSocket(IpsecContext_t *pContext)
     for (zIndex = 0U; zIndex < (sizeof(apcSocketPaths) / sizeof(apcSocketPaths[0]));
          zIndex++) {
         eError = CopyIpsecString(
-            pContext->acViciSocketPath,
-            sizeof(pContext->acViciSocketPath),
+            pContext->Vici.acSocketPath,
+            sizeof(pContext->Vici.acSocketPath),
             (const uint8_t *)apcSocketPaths[zIndex],
             strlen(apcSocketPaths[zIndex]));
         if (IPSEC_OK == eError) {
@@ -116,7 +116,7 @@ static IpsecError_t InitializeIpsecInternal(
         eError = ConfigureIpsecDatapath(pContext, pDatapathConfig);
     }
 
-    if ((IPSEC_OK == eError) && ('\0' == pContext->acViciSocketPath[0])) {
+    if ((IPSEC_OK == eError) && ('\0' == pContext->Vici.acSocketPath[0])) {
         eError = ConnectDefaultIpsecSocket(pContext);
     }
     else if (IPSEC_OK == eError) {
@@ -151,7 +151,7 @@ static IpsecError_t InitializeIpsecInternal(
     if (IPSEC_OK == eError) {
         *ppContext = pContext;
         LogIpsec(pContext, IPSEC_LOG_INFO, "connected to charon VICI socket %s",
-                 pContext->acViciSocketPath);
+                 pContext->Vici.acSocketPath);
     }
     else if (NULL != pContext) {
         DeinitializeIpsecPlainPath(pContext);
@@ -169,10 +169,16 @@ static IpsecError_t InitializeIpsecInternal(
     return eError;
 }
 
+IpsecError_t InitializeIpsecControl(IpsecContext_t **ppContext,
+                                    const IpsecConfig_t *pConfig)
+{
+    return InitializeIpsecInternal(ppContext, pConfig, NULL, false);
+}
+
 IpsecError_t InitializeIpsec(IpsecContext_t **ppContext,
                              const IpsecConfig_t *pConfig)
 {
-    return InitializeIpsecInternal(ppContext, pConfig, NULL, false);
+    return InitializeIpsecControl(ppContext, pConfig);
 }
 
 IpsecError_t InitializeIpsecWithDatapath(IpsecContext_t **ppContext,

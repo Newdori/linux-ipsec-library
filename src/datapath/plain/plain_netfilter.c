@@ -190,9 +190,9 @@ IpsecError_t OpenIpsecPlainQueue(IpsecContext_t *pContext,
         eError = MapPlainQueueError(errno, IPSEC_ERR_PLAIN_PATH_UNAVAILABLE);
     }
     Address.nl_family = AF_NETLINK;
-    Timeout.tv_sec = (time_t)(pContext->uiCommandTimeoutMs / 1000U);
+    Timeout.tv_sec = (time_t)(pContext->Vici.uiCommandTimeoutMs / 1000U);
     Timeout.tv_usec = (suseconds_t)
-        ((pContext->uiCommandTimeoutMs % 1000U) * 1000U);
+        ((pContext->Vici.uiCommandTimeoutMs % 1000U) * 1000U);
     if ((IPSEC_OK == eError) &&
         (0 != bind(pState->iQueueSocket, (const struct sockaddr *)&Address,
                    sizeof(Address)))) {
@@ -221,7 +221,7 @@ IpsecError_t OpenIpsecPlainQueue(IpsecContext_t *pContext,
         LogIpsec(pContext, IPSEC_LOG_INFO,
             "plain APPLICATION path bound NFQUEUE %u; %s owns post-decrypt selection",
             (uint32_t)pState->usQueueNumber,
-            pContext->DatapathConfig.bManagePlainNetfilterRule ?
+            pContext->Datapath.Config.bManagePlainNetfilterRule ?
                 "library" : "OS");
     }
     return eError;
