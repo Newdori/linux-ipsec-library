@@ -21,6 +21,9 @@ typedef struct IpsecProtectedApplicationState {
     int32_t iTunFd;
     uint32_t uiTunIndex;
     uint32_t uiEgressIndex;
+    /* Transient per-peer filter view used by the TC encoder. The persistent
+     * address scope is stored only in aPeers and comes from loaded connections.
+     */
     uint32_t uiLocalAddress;
     uint32_t uiRemoteAddress;
     uint32_t uiFilterHandle;

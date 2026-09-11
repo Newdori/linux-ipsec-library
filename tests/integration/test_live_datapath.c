@@ -12,8 +12,6 @@
 
 typedef enum LivePacketAction {
     LIVE_PACKET_STATUS = 0,
-    LIVE_PACKET_PROTECTED_RECEIVE,
-    LIVE_PACKET_PROTECTED_SUBMIT,
     LIVE_PACKET_PLAIN_RECEIVE
 } LivePacketAction_t;
 
@@ -82,77 +80,30 @@ static IpsecError_t WriteLiveFile(const char *pcPath,
     return (0 == close(iFd)) ? IPSEC_OK : IPSEC_ERR_FILE_WRITE;
 }
 
-static IpsecError_t ReadLiveFile(const char *pcPath,
-    uint8_t *pucData, size_t zCapacity, size_t *pzLength)
-{
-    int32_t iFd = (int32_t)open(pcPath, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    ssize_t lLength;
-    uint8_t ucExtra;
-    if (iFd < 0) {
-        return IPSEC_ERR_FILE_OPEN;
-    }
-    do {
-        lLength = read(iFd, pucData, zCapacity);
-    } while ((lLength < 0) && (EINTR == errno));
-    if ((lLength <= 0) || (0 != read(iFd, &ucExtra, sizeof(ucExtra)))) {
-        (void)close(iFd);
-        return IPSEC_ERR_FILE_READ;
-    }
-    *pzLength = (size_t)lLength;
-    return (0 == close(iFd)) ? IPSEC_OK : IPSEC_ERR_FILE_READ;
-}
-
-static IpsecError_t ReceiveLivePacket(IpsecContext_t *pContext,
-    LivePacketAction_t eAction, const char *pcPath)
+static IpsecError_t ReceiveLivePlainPacket(IpsecContext_t *pContext,
+    const char *pcPath)
 {
     uint8_t aucData[IPSEC_PROTECTED_PACKET_CAPACITY];
-    IpsecProtectedPacket_t Protected = {.uiStructSize = sizeof(Protected),
-        .pucData = aucData, .zCapacity = sizeof(aucData)};
     IpsecPlainPacket_t Plain = {.uiStructSize = sizeof(Plain),
         .pucData = aucData, .zCapacity = sizeof(aucData)};
     IpsecError_t eError;
     size_t zLength;
-    if (LIVE_PACKET_PROTECTED_RECEIVE == eAction) {
-        (void)puts("PROTECTED APPLICATION READY: generate one matching packet within 10 seconds.");
-        eError = ReceiveIpsecProtectedPacket(pContext, &Protected, 10000U);
-        zLength = Protected.zLength;
-    }
-    else {
-        (void)puts("PLAIN APPLICATION READY: deliver one authenticated ESP packet within 10 seconds.");
-        eError = ReceiveIpsecPlainPacket(pContext, &Plain, 10000U);
-        zLength = Plain.zLength;
-    }
+    (void)puts("PLAIN APPLICATION READY: deliver one authenticated ESP packet within 10 seconds.");
+    eError = ReceiveIpsecPlainPacket(pContext, &Plain, 10000U);
+    zLength = Plain.zLength;
     if (IPSEC_OK == eError) {
         eError = WriteLiveFile(pcPath, aucData, zLength);
     }
     return (0 != giStop) ? IPSEC_ERR_CANCELLED : eError;
 }
 
-static IpsecError_t SubmitLiveProtectedPacket(IpsecContext_t *pContext,
-    const char *pcPath)
-{
-    uint8_t aucData[IPSEC_PROTECTED_PACKET_CAPACITY];
-    IpsecProtectedPacket_t Packet = {.uiStructSize = sizeof(Packet),
-        .pucData = aucData, .zCapacity = sizeof(aucData),
-        .eType = IPSEC_PROTECTED_PACKET_RAW_ESP,
-        .eDirection = IPSEC_PACKET_DIRECTION_INBOUND};
-    IpsecError_t eError = ReadLiveFile(
-        pcPath, aucData, sizeof(aucData), &Packet.zLength);
-    if (IPSEC_OK == eError) {
-        eError = SubmitIpsecProtectedPacket(pContext, &Packet);
-    }
-    return eError;
-}
-
 static void ShowLiveUsage(const char *pcProgram)
 {
     (void)fprintf(stderr,
         "usage: %s status BACKEND VICI_SOCKET CHARON_TUN_OR_DASH\n"
-        "       %s protected-receive|protected-submit BACKEND VICI_SOCKET "
-        "CHARON_TUN_OR_DASH EGRESS PROTECTED_TUN LOCAL_IPV4 REMOTE_IPV4 FILE\n"
         "       %s plain-receive BACKEND VICI_SOCKET CHARON_TUN_OR_DASH "
         "QUEUE_NUMBER FILE\n",
-        pcProgram, pcProgram, pcProgram);
+        pcProgram, pcProgram);
 }
 
 static bool ParseLiveAction(int32_t iArgumentCount, char **ppcArguments,
@@ -160,17 +111,6 @@ static bool ParseLiveAction(int32_t iArgumentCount, char **ppcArguments,
 {
     if ((5 == iArgumentCount) && (0 == strcmp("status", ppcArguments[1]))) {
         *peAction = LIVE_PACKET_STATUS;
-    }
-    else if (10 == iArgumentCount) {
-        if (0 == strcmp("protected-receive", ppcArguments[1])) {
-            *peAction = LIVE_PACKET_PROTECTED_RECEIVE;
-        }
-        else if (0 == strcmp("protected-submit", ppcArguments[1])) {
-            *peAction = LIVE_PACKET_PROTECTED_SUBMIT;
-        }
-        else {
-            return false;
-        }
     }
     else if ((7 == iArgumentCount) &&
         (0 == strcmp("plain-receive", ppcArguments[1]))) {
@@ -198,18 +138,6 @@ static bool ConfigureLiveDatapath(char **ppcArguments,
         !CopyLiveArgument(pDatapath->acKernelLibipsecTunName,
             sizeof(pDatapath->acKernelLibipsecTunName), ppcArguments[4])) {
         return false;
-    }
-    if ((LIVE_PACKET_PROTECTED_RECEIVE == eAction) ||
-        (LIVE_PACKET_PROTECTED_SUBMIT == eAction)) {
-        pDatapath->eProtectedPacketPath = IPSEC_PACKET_PATH_APPLICATION;
-        return CopyLiveArgument(pDatapath->acProtectedEgressInterfaceName,
-                   sizeof(pDatapath->acProtectedEgressInterfaceName), ppcArguments[5]) &&
-            CopyLiveArgument(pDatapath->acProtectedInterfaceName,
-                   sizeof(pDatapath->acProtectedInterfaceName), ppcArguments[6]) &&
-            CopyLiveArgument(pDatapath->acProtectedLocalAddress,
-                   sizeof(pDatapath->acProtectedLocalAddress), ppcArguments[7]) &&
-            CopyLiveArgument(pDatapath->acProtectedRemoteAddress,
-                   sizeof(pDatapath->acProtectedRemoteAddress), ppcArguments[8]);
     }
     if (LIVE_PACKET_PLAIN_RECEIVE == eAction) {
         pDatapath->ePlainPacketPath = IPSEC_PACKET_PATH_APPLICATION;
@@ -259,9 +187,7 @@ int main(int iArgumentCount, char **ppcArguments)
     }
     if ((IPSEC_OK == eError) && (LIVE_PACKET_STATUS != eAction)) {
         pcFile = ppcArguments[iArgumentCount - 1];
-        eError = (LIVE_PACKET_PROTECTED_SUBMIT == eAction) ?
-            SubmitLiveProtectedPacket(pContext, pcFile) :
-            ReceiveLivePacket(pContext, eAction, pcFile);
+        eError = ReceiveLivePlainPacket(pContext, pcFile);
     }
     DeinitializeIpsec(pContext);
     if (IPSEC_OK != eError) {

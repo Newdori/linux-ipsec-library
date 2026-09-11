@@ -217,8 +217,6 @@ static IpsecError_t BuildReportConfigurationHash(
     UpdateReportHashText(&ullHash, pDatapath->acProtectedInterfaceName);
     UpdateReportHashText(&ullHash,
                          pDatapath->acProtectedEgressInterfaceName);
-    UpdateReportHashText(&ullHash, pDatapath->acProtectedLocalAddress);
-    UpdateReportHashText(&ullHash, pDatapath->acProtectedRemoteAddress);
     UpdateReportHashNumber(&ullHash, pDatapath->usProtectedFilterPriority);
     UpdateReportHashNumber(&ullHash, pDatapath->usPlainQueueNumber);
     UpdateReportHashNumber(&ullHash,

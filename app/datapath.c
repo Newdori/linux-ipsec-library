@@ -1,6 +1,5 @@
 #include "app_internal.h"
 
-#include <arpa/inet.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -103,14 +102,6 @@ IpsecError_t SetNativeAppDatapathSetting(
             pcDestination = pDatapath->acProtectedEgressInterfaceName;
             zCapacity = sizeof(pDatapath->acProtectedEgressInterfaceName);
         }
-        else if (0 == strcmp("protected_local_ip", pcKey)) {
-            pcDestination = pDatapath->acProtectedLocalAddress;
-            zCapacity = sizeof(pDatapath->acProtectedLocalAddress);
-        }
-        else if (0 == strcmp("protected_remote_ip", pcKey)) {
-            pcDestination = pDatapath->acProtectedRemoteAddress;
-            zCapacity = sizeof(pDatapath->acProtectedRemoteAddress);
-        }
         else {
             return IPSEC_ERR_INVALID_ARGUMENT;
         }
@@ -147,8 +138,6 @@ static bool IsNativeAppInterfaceNameValid(const char *pcName, bool bOptional)
 IpsecError_t ValidateNativeAppDatapathConfig(const NativeAppConfig_t *pConfig)
 {
     const IpsecDatapathConfig_t *pDatapath;
-    struct in_addr Local;
-    struct in_addr Remote;
     if (NULL == pConfig) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
@@ -169,11 +158,6 @@ IpsecError_t ValidateNativeAppDatapathConfig(const NativeAppConfig_t *pConfig)
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     if (IPSEC_PACKET_PATH_APPLICATION == pDatapath->eProtectedPacketPath) {
-        bool bHasProtectedLocal =
-            '\0' != pDatapath->acProtectedLocalAddress[0];
-        bool bHasProtectedRemote =
-            '\0' != pDatapath->acProtectedRemoteAddress[0];
-
         if (!IsNativeAppInterfaceNameValid(pDatapath->acProtectedInterfaceName, false) ||
             !IsNativeAppInterfaceNameValid(pDatapath->acProtectedEgressInterfaceName, false) ||
             (0 == strcmp(pDatapath->acProtectedInterfaceName,
@@ -182,23 +166,8 @@ IpsecError_t ValidateNativeAppDatapathConfig(const NativeAppConfig_t *pConfig)
                          pDatapath->acProtectedEgressInterfaceName)) ||
             (0 == strcmp(pDatapath->acProtectedEgressInterfaceName,
                          pDatapath->acKernelLibipsecTunName)) ||
-            (UINT16_MAX == pDatapath->usProtectedFilterPriority) ||
-            (bHasProtectedLocal != bHasProtectedRemote)) {
+            (UINT16_MAX == pDatapath->usProtectedFilterPriority)) {
             return IPSEC_ERR_INVALID_ARGUMENT;
-        }
-        if (bHasProtectedLocal &&
-            ((1 != inet_pton(AF_INET,
-                             pDatapath->acProtectedLocalAddress, &Local)) ||
-             (1 != inet_pton(AF_INET,
-                             pDatapath->acProtectedRemoteAddress, &Remote)) ||
-             (Local.s_addr == Remote.s_addr) ||
-             (0 == Local.s_addr) || (0 == Remote.s_addr) ||
-             (ntohl(Local.s_addr) >= 0xe0000000U) ||
-             (ntohl(Remote.s_addr) >= 0xe0000000U))) {
-            return IPSEC_ERR_INVALID_ARGUMENT;
-        }
-        else {
-            /* Empty pair selects dynamic per-connection protected filters. */
         }
     }
     else {
@@ -237,9 +206,7 @@ bool AreNativeAppContextSettingsEqual(
         (pA->bManagePlainNetfilterRule == pB->bManagePlainNetfilterRule) &&
         (0 == strcmp(pA->acKernelLibipsecTunName, pB->acKernelLibipsecTunName)) &&
         (0 == strcmp(pA->acProtectedInterfaceName, pB->acProtectedInterfaceName)) &&
-        (0 == strcmp(pA->acProtectedEgressInterfaceName, pB->acProtectedEgressInterfaceName)) &&
-        (0 == strcmp(pA->acProtectedLocalAddress, pB->acProtectedLocalAddress)) &&
-        (0 == strcmp(pA->acProtectedRemoteAddress, pB->acProtectedRemoteAddress));
+        (0 == strcmp(pA->acProtectedEgressInterfaceName, pB->acProtectedEgressInterfaceName));
 }
 
 void ShowNativeAppDatapathConfig(const NativeAppConfig_t *pConfig)
@@ -259,8 +226,7 @@ void ShowNativeAppDatapathConfig(const NativeAppConfig_t *pConfig)
         "  Charon TUN       : %s\n"
         "  Protected TUN    : %s\n"
         "  Protected Egress : %s\n"
-        "  Protected Local  : %s\n"
-        "  Protected Remote : %s\n"
+        "  Address Scope    : per connection\n"
         "  TC Priority      : %" PRIu16 " (+1; per-peer handles)\n"
         "  Plain NFQUEUE    : %" PRIu16 "\n"
         "  Netfilter Hook   : %s (%s-owned rule)\n",
@@ -272,10 +238,6 @@ void ShowNativeAppDatapathConfig(const NativeAppConfig_t *pConfig)
         ('\0' == pDatapath->acKernelLibipsecTunName[0]) ? "<discover>" :
             pDatapath->acKernelLibipsecTunName,
         pDatapath->acProtectedInterfaceName, pDatapath->acProtectedEgressInterfaceName,
-        ('\0' == pDatapath->acProtectedLocalAddress[0]) ? "<per-connection>" :
-            pDatapath->acProtectedLocalAddress,
-        ('\0' == pDatapath->acProtectedRemoteAddress[0]) ? "<per-connection>" :
-            pDatapath->acProtectedRemoteAddress,
         (0U == pDatapath->usProtectedFilterPriority) ? (uint16_t)32000U :
             pDatapath->usProtectedFilterPriority,
         pDatapath->usPlainQueueNumber,

@@ -32,12 +32,10 @@ static bool VerifyDatapathSettings(void)
     CHECK(IPSEC_OK == SetNativeAppConfigSetting(
         &Config, "protected_interface", "ipsec-path"));
     CHECK(IPSEC_OK == ValidateNativeAppDatapathConfig(&Config));
-    CHECK(IPSEC_OK == SetNativeAppConfigSetting(
+    CHECK(IPSEC_ERR_INVALID_ARGUMENT == SetNativeAppConfigSetting(
         &Config, "protected_local_ip", "192.0.2.1"));
-    CHECK(IPSEC_OK != ValidateNativeAppDatapathConfig(&Config));
-    CHECK(IPSEC_OK == SetNativeAppConfigSetting(
+    CHECK(IPSEC_ERR_INVALID_ARGUMENT == SetNativeAppConfigSetting(
         &Config, "protected_remote_ip", "192.0.2.2"));
-    CHECK(IPSEC_OK == ValidateNativeAppDatapathConfig(&Config));
     CHECK(IPSEC_OK == SetNativeAppConfigSetting(
         &Config, "plain_packet_path", "application"));
     CHECK(IPSEC_OK != ValidateNativeAppDatapathConfig(&Config));

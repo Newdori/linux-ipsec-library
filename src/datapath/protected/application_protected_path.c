@@ -63,25 +63,7 @@ static IpsecError_t InitializeApplicationProtectedPath(IpsecContext_t *pContext)
         32000U : pConfig->usProtectedFilterPriority;
     memcpy(pState->acTunName, pConfig->acProtectedInterfaceName, sizeof(pState->acTunName));
     memcpy(pState->acEgressName, pConfig->acProtectedEgressInterfaceName, sizeof(pState->acEgressName));
-    if ((('\0' == pConfig->acProtectedLocalAddress[0]) !=
-         ('\0' == pConfig->acProtectedRemoteAddress[0])) ||
-        (('\0' != pConfig->acProtectedLocalAddress[0]) &&
-         ((1 != inet_pton(AF_INET, pConfig->acProtectedLocalAddress,
-                          &pState->uiLocalAddress)) ||
-          (1 != inet_pton(AF_INET, pConfig->acProtectedRemoteAddress,
-                          &pState->uiRemoteAddress)) ||
-          !IsProtectedApplicationAddressValid(pState->uiLocalAddress) ||
-          !IsProtectedApplicationAddressValid(pState->uiRemoteAddress) ||
-          (pState->uiLocalAddress == pState->uiRemoteAddress)))) {
-        return IPSEC_ERR_INVALID_ARGUMENT;
-    }
     eError = CreateIpsecProtectedApplicationEndpoint(pContext, pState);
-    if ((IPSEC_OK == eError) && (0U != pState->uiRemoteAddress)) {
-        eError = InstallIpsecProtectedApplicationFilters(pState);
-    }
-    else {
-        /* Dynamic peer filters are installed when a connection is loaded. */
-    }
     return eError; /* Path manager cleans partial initialization. */
 }
 
@@ -190,74 +172,67 @@ IpsecError_t RegisterIpsecProtectedPeerInternal(
     if (0 != pthread_mutex_lock(&pState->PeerMutex)) {
         return IPSEC_ERR_INTERNAL;
     }
-    if (0U != pState->uiRemoteAddress) {
-        eError = ((uiLocalAddress == pState->uiLocalAddress) &&
-                  (uiRemoteAddress == pState->uiRemoteAddress)) ?
-            IPSEC_OK : IPSEC_ERR_RESOURCE_CONFLICT;
-    }
-    else {
-        eError = IPSEC_ERR_BUFFER_TOO_SMALL;
-        for (uiIndex = 0U;
-             uiIndex < IPSEC_PROTECTED_APPLICATION_PEER_CAPACITY;
-             uiIndex++) {
-            IpsecProtectedApplicationPeer_t *pPeer =
-                &pState->aPeers[uiIndex];
+    eError = IPSEC_ERR_BUFFER_TOO_SMALL;
+    for (uiIndex = 0U;
+         uiIndex < IPSEC_PROTECTED_APPLICATION_PEER_CAPACITY;
+         uiIndex++) {
+        IpsecProtectedApplicationPeer_t *pPeer =
+            &pState->aPeers[uiIndex];
 
-            if (!pPeer->bInUse && (UINT32_MAX == uiFreeIndex)) {
-                uiFreeIndex = uiIndex;
-            }
-            else if (pPeer->bInUse &&
-                     (0 == strcmp(pPeer->acConnectionName,
-                                  pConfig->pcName))) {
-                eError = ((uiLocalAddress == pPeer->uiLocalAddress) &&
-                          (uiRemoteAddress == pPeer->uiRemoteAddress)) ?
-                    IPSEC_OK : IPSEC_ERR_RESOURCE_CONFLICT;
-                break;
+        if (!pPeer->bInUse && (UINT32_MAX == uiFreeIndex)) {
+            uiFreeIndex = uiIndex;
+        }
+        else if (pPeer->bInUse &&
+                 (0 == strcmp(pPeer->acConnectionName,
+                              pConfig->pcName))) {
+            eError = ((uiLocalAddress == pPeer->uiLocalAddress) &&
+                      (uiRemoteAddress == pPeer->uiRemoteAddress)) ?
+                IPSEC_OK : IPSEC_ERR_RESOURCE_CONFLICT;
+            break;
+        }
+        else {
+            /* Inspect the next dynamic peer slot. */
+        }
+    }
+    if ((IPSEC_ERR_BUFFER_TOO_SMALL == eError) &&
+        (UINT32_MAX != uiFreeIndex)) {
+        IpsecProtectedApplicationPeer_t *pPeer =
+            &pState->aPeers[uiFreeIndex];
+
+        (void)memset(pPeer, 0, sizeof(*pPeer));
+        (void)memcpy(pPeer->acConnectionName, pConfig->pcName,
+                     strlen(pConfig->pcName) + 1U);
+        pPeer->uiLocalAddress = uiLocalAddress;
+        pPeer->uiRemoteAddress = uiRemoteAddress;
+        pPeer->uiFilterHandle =
+            IPSEC_PROTECTED_APPLICATION_HANDLE_BASE | (uiFreeIndex + 1U);
+        eError = InstallProtectedApplicationPeer(pState, pPeer);
+        if (IPSEC_OK == eError) {
+            pPeer->bInUse = true;
+            pState->uiPeerCount++;
+            *pbAdded = true;
+        }
+        else {
+            IpsecError_t eCleanupError =
+                RemoveProtectedApplicationPeer(pState, pPeer);
+
+            if (IPSEC_OK == eCleanupError) {
+                (void)memset(pPeer, 0, sizeof(*pPeer));
             }
             else {
-                /* Inspect the next dynamic peer slot. */
-            }
-        }
-        if ((IPSEC_ERR_BUFFER_TOO_SMALL == eError) &&
-            (UINT32_MAX != uiFreeIndex)) {
-            IpsecProtectedApplicationPeer_t *pPeer =
-                &pState->aPeers[uiFreeIndex];
-
-            (void)memset(pPeer, 0, sizeof(*pPeer));
-            (void)memcpy(pPeer->acConnectionName, pConfig->pcName,
-                         strlen(pConfig->pcName) + 1U);
-            pPeer->uiLocalAddress = uiLocalAddress;
-            pPeer->uiRemoteAddress = uiRemoteAddress;
-            pPeer->uiFilterHandle =
-                IPSEC_PROTECTED_APPLICATION_HANDLE_BASE | (uiFreeIndex + 1U);
-            eError = InstallProtectedApplicationPeer(pState, pPeer);
-            if (IPSEC_OK == eError) {
+                /* Retain ownership so the caller and deinit can retry. */
                 pPeer->bInUse = true;
                 pState->uiPeerCount++;
                 *pbAdded = true;
-            }
-            else {
-                IpsecError_t eCleanupError =
-                    RemoveProtectedApplicationPeer(pState, pPeer);
-
-                if (IPSEC_OK == eCleanupError) {
-                    (void)memset(pPeer, 0, sizeof(*pPeer));
-                }
-                else {
-                    /* Retain ownership so the caller and deinit can retry. */
-                    pPeer->bInUse = true;
-                    pState->uiPeerCount++;
-                    *pbAdded = true;
-                    LogIpsec(pContext, IPSEC_LOG_WARNING,
-                        "protected APPLICATION partial filter rollback failed for %s: %s",
-                        pConfig->pcName,
-                        GetIpsecErrorString(eCleanupError));
-                }
+                LogIpsec(pContext, IPSEC_LOG_WARNING,
+                    "protected APPLICATION partial filter rollback failed for %s: %s",
+                    pConfig->pcName,
+                    GetIpsecErrorString(eCleanupError));
             }
         }
-        else {
-            /* Preserve an existing-peer or capacity result. */
-        }
+    }
+    else {
+        /* Preserve an existing-peer or capacity result. */
     }
     (void)pthread_mutex_unlock(&pState->PeerMutex);
     return eError;
@@ -281,9 +256,6 @@ IpsecError_t UnregisterIpsecProtectedPeerInternal(
     pState = pContext->ProtectedPath.pApplicationState;
     if ((NULL == pState) || !pState->bPeerMutexInitialized) {
         return IPSEC_ERR_PROTECTED_PATH_UNAVAILABLE;
-    }
-    if (0U != pState->uiRemoteAddress) {
-        return IPSEC_OK;
     }
     if (0 != pthread_mutex_lock(&pState->PeerMutex)) {
         return IPSEC_ERR_INTERNAL;
@@ -336,22 +308,16 @@ bool MatchIpsecProtectedPeerInternal(
         (0 != pthread_mutex_lock(&pState->PeerMutex))) {
         return false;
     }
-    if (0U != pState->uiRemoteAddress) {
-        bMatch = (uiLocalAddress == pState->uiLocalAddress) &&
-            (uiRemoteAddress == pState->uiRemoteAddress);
-    }
-    else {
-        for (uiIndex = 0U;
-             (uiIndex < IPSEC_PROTECTED_APPLICATION_PEER_CAPACITY) &&
-             !bMatch;
-             uiIndex++) {
-            const IpsecProtectedApplicationPeer_t *pPeer =
-                &pState->aPeers[uiIndex];
+    for (uiIndex = 0U;
+         (uiIndex < IPSEC_PROTECTED_APPLICATION_PEER_CAPACITY) &&
+         !bMatch;
+         uiIndex++) {
+        const IpsecProtectedApplicationPeer_t *pPeer =
+            &pState->aPeers[uiIndex];
 
-            bMatch = pPeer->bInUse &&
-                (uiLocalAddress == pPeer->uiLocalAddress) &&
-                (uiRemoteAddress == pPeer->uiRemoteAddress);
-        }
+        bMatch = pPeer->bInUse &&
+            (uiLocalAddress == pPeer->uiLocalAddress) &&
+            (uiRemoteAddress == pPeer->uiRemoteAddress);
     }
     (void)pthread_mutex_unlock(&pState->PeerMutex);
     return bMatch;
@@ -368,27 +334,18 @@ static bool IsProtectedApplicationPacketInScope(
         (0 != pthread_mutex_lock(&pState->PeerMutex))) {
         return false;
     }
-    if (0U != pState->uiRemoteAddress) {
-        bMatch =
-            (uiSource == (bInbound ? pState->uiRemoteAddress :
-                                      pState->uiLocalAddress)) &&
-            (uiDestination == (bInbound ? pState->uiLocalAddress :
-                                           pState->uiRemoteAddress));
-    }
-    else {
-        for (uiIndex = 0U;
-             (uiIndex < IPSEC_PROTECTED_APPLICATION_PEER_CAPACITY) &&
-             !bMatch;
-             uiIndex++) {
-            const IpsecProtectedApplicationPeer_t *pPeer =
-                &pState->aPeers[uiIndex];
+    for (uiIndex = 0U;
+         (uiIndex < IPSEC_PROTECTED_APPLICATION_PEER_CAPACITY) &&
+         !bMatch;
+         uiIndex++) {
+        const IpsecProtectedApplicationPeer_t *pPeer =
+            &pState->aPeers[uiIndex];
 
-            bMatch = pPeer->bInUse &&
-                (uiSource == (bInbound ? pPeer->uiRemoteAddress :
-                                        pPeer->uiLocalAddress)) &&
-                (uiDestination == (bInbound ? pPeer->uiLocalAddress :
-                                             pPeer->uiRemoteAddress));
-        }
+        bMatch = pPeer->bInUse &&
+            (uiSource == (bInbound ? pPeer->uiRemoteAddress :
+                                    pPeer->uiLocalAddress)) &&
+            (uiDestination == (bInbound ? pPeer->uiLocalAddress :
+                                         pPeer->uiRemoteAddress));
     }
     (void)pthread_mutex_unlock(&pState->PeerMutex);
     return bMatch;
@@ -420,9 +377,6 @@ static IpsecError_t InspectProtectedApplicationPeerFilters(
     uint32_t uiIndex;
     IpsecError_t eError = IPSEC_OK;
 
-    if (0U != pState->uiRemoteAddress) {
-        return InspectIpsecProtectedApplicationFilters(pState, false);
-    }
     if (!pState->bPeerMutexInitialized ||
         (0 != pthread_mutex_lock(&pState->PeerMutex))) {
         return IPSEC_ERR_INTERNAL;

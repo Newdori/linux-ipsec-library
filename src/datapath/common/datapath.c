@@ -58,9 +58,7 @@ IpsecError_t ConfigureIpsecDatapath(IpsecContext_t *pContext,
         !ValidateDatapathName(Config.acProtectedInterfaceName,
                              sizeof(Config.acProtectedInterfaceName)) ||
         !ValidateDatapathName(Config.acProtectedEgressInterfaceName,
-                             sizeof(Config.acProtectedEgressInterfaceName)) ||
-        (NULL == memchr(Config.acProtectedLocalAddress, '\0', sizeof(Config.acProtectedLocalAddress))) ||
-        (NULL == memchr(Config.acProtectedRemoteAddress, '\0', sizeof(Config.acProtectedRemoteAddress)))) {
+                             sizeof(Config.acProtectedEgressInterfaceName))) {
         return IPSEC_ERR_INVALID_ARGUMENT;
     }
     pContext->Datapath.Config = Config;

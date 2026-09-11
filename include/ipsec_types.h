@@ -123,13 +123,13 @@ typedef struct IpsecDatapathConfig {
     /* Protected APPLICATION owns a distinct, non-persistent TUN. */
     char acProtectedInterfaceName[IPSEC_DATAPATH_NAME_LENGTH];
     /* Dedicated Ethernet egress, with an OS-provisioned clsact qdisc.
-     * Empty local/remote addresses install scoped filters from each loaded
-     * connection. Supplying both selects one legacy fixed IPv4 outer pair.
-     * No automatic route, firewall, qdisc or strongSwan configuration changes.
+     * Each loaded connection installs a scoped filter from its outer address
+     * pair. No automatic route, firewall, qdisc or strongSwan configuration
+     * changes are performed.
      */
     char acProtectedEgressInterfaceName[IPSEC_DATAPATH_NAME_LENGTH];
-    char acProtectedLocalAddress[16];
-    char acProtectedRemoteAddress[16];
+    /* Reserved to preserve the public structure layout. Initialize to zero. */
+    uint8_t aucReservedProtectedAddressScope[32];
     /* Base and base+1 are exclusively reserved TC priorities; zero = 32000.
      * Each peer uses a distinct handle at both priorities. The application/OS
      * must prevent concurrent changes in this reserved priority namespace.
